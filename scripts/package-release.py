@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tarfile
@@ -32,6 +33,14 @@ def revision() -> str:
     if capture("git", "status", "--porcelain"):
         result += "-dirty"
     return result
+
+
+def eplus_preparing_policy() -> str:
+    value = os.environ.get("SHIORICO_LOCAL_EPLUS")
+    if value not in (None, "0", "1"):
+        raise ValueError("SHIORICO_LOCAL_EPLUS must be 0 or 1")
+    local = value == "1" or (value is None and (ROOT / ".shiorico-local-eplus").is_file())
+    return "probe" if local else "stop"
 
 
 def archive_tree(source: Path, output: Path) -> None:
@@ -173,6 +182,7 @@ def make_binary(args: argparse.Namespace) -> Path:
             "version": args.version,
             "variant": args.variant,
             "target": args.target,
+            "eplus_preparing_policy": eplus_preparing_policy(),
             "source_revision": revision(),
             "source_archive": source_name,
             "source_url": source_url,

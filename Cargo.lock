@@ -3881,7 +3881,9 @@ dependencies = [
  "anyhow",
  "iori-eplus",
  "log",
+ "reqwest",
  "shiori-plugin",
+ "tokio",
 ]
 
 [[package]]

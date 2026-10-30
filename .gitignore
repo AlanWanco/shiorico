@@ -30,3 +30,6 @@ node_modules/
 
 # Local development binaries
 /dist/
+
+# Local Eplus playback policy; public builds stop while PREPARING.
+/.shiorico-local-eplus

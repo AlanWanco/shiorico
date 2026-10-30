@@ -57,6 +57,7 @@ def validate(directory: Path, version: str, variants: list[str], targets: list[s
     assert any(
         "/vendor/bento4-src-" in name and name.endswith("/Bento4/Source/C++/Core/Ap4.h") for name in source_files
     ), "Bento4 source missing"
+    assert f"{source_name}/.shiorico-local-eplus" not in source_files, "Local Eplus marker in release source"
     source_revision = source_data[f"{source_name}/SOURCE_REVISION"].decode().strip()
     if "ffmpeg" in variants:
         assert f"{source_name}/native/ffmpeg/configure" in source_files, "FFmpeg source missing"
@@ -85,6 +86,7 @@ def validate(directory: Path, version: str, variants: list[str], targets: list[s
                 target,
                 source_revision,
             ), f"Source/binary mismatch: {archive.name}"
+            assert info["eplus_preparing_policy"] == "stop", f"Local Eplus policy in release: {archive.name}"
             assert info["source_archive"] == source.name, f"Incorrect source link: {archive.name}"
             assets.append(archive)
             if variant == "ffmpeg":

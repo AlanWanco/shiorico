@@ -17,7 +17,7 @@ shiorico download 'https://example.com/playlist.m3u8' -o recording.mkv
 shiorico inspect 'https://example.com/playlist.m3u8'
 ```
 
-需要持续等待开播时加 `--wait`，用 `--wait-interval 60` 调整重试间隔。`--initial-segments 3` 只限制首次抓取直播列表的分片数量，用于减少启动延迟。`--no-recycle` 保留已下载分片。
+公开版遇到 Eplus 的 `PREPARING`（准备中）状态会停止取流，即使播放列表已经可访问。需要持续等待开播时加 `--wait`，用 `--wait-interval 60` 调整重试间隔。`--initial-segments 3` 只限制首次抓取直播列表的分片数量，用于减少启动延迟。`--no-recycle` 保留已下载分片。
 
 ```bash
 # 将 RTMP_URL 设置为自己的接收地址；不要把凭据粘贴进日志或公开报告。

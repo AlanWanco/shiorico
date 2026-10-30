@@ -1,5 +1,7 @@
-use iori_eplus::EplusClient;
+use iori_eplus::{EplusClient, model::DeliveryStatus};
 use shiori_plugin::*;
+
+const ALLOW_PREPARING: bool = cfg!(shiorico_local_eplus);
 
 pub struct EplusPlugin;
 
@@ -96,6 +98,13 @@ impl Inspect for EplusInspector {
         // Fetch event data — CloudFront Set-Cookie headers are stored in the shared jar.
         let event_data = client.get_event_data(url).await?;
 
+        if event_data.delivery_status == DeliveryStatus::Preparing && !ALLOW_PREPARING {
+            log::warn!(
+                "Eplus event is PREPARING; no download will start until the event is ready."
+            );
+            return Ok(InspectResult::None);
+        }
+
         if event_data.m3u8_urls.is_empty() {
             log::warn!("No m3u8 URLs found on the page.");
             return Ok(InspectResult::None);
@@ -113,7 +122,7 @@ impl Inspect for EplusInspector {
             return Ok(InspectResult::None);
         };
 
-        if event_data.delivery_status == iori_eplus::model::DeliveryStatus::Preparing {
+        if event_data.delivery_status == DeliveryStatus::Preparing {
             log::info!(
                 "Event is marked PREPARING, but a cookie-authenticated playlist is already available."
             );
@@ -157,5 +166,101 @@ impl Inspect for EplusInspector {
             ),
             ..Default::default()
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ALLOW_PREPARING, EplusInspector};
+    use shiori_plugin::{Inspect, InspectResult, InspectorArguments, ShioriContext};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct AnonymousArguments;
+
+    impl InspectorArguments for AnonymousArguments {
+        fn get_string(&self, _: &'static str) -> Option<String> {
+            None
+        }
+
+        fn get_boolean(&self, _: &'static str) -> bool {
+            false
+        }
+    }
+
+    async fn inspect_event(status: &str) -> (InspectResult, usize) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = "stream.live.eplus.jp";
+        let playlist = format!("http://{host}:{}/prepared.m3u8", address.port());
+        let page = format!(
+            "<script>var app = {{\"appId\":\"fixture\",\"appName\":\"Fixture\",\"deliveryStatus\":\"{status}\"}};</script>\nvar listChannels = [\"{playlist}\"];"
+        );
+        let server = tokio::spawn(async move {
+            let mut playlist_requests = 0;
+            loop {
+                let accepted =
+                    tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept())
+                        .await;
+                let Ok(Ok((mut stream, _))) = accepted else {
+                    break;
+                };
+                let mut request = Vec::new();
+                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let mut buffer = [0; 1024];
+                    let length = stream.read(&mut buffer).await.unwrap();
+                    if length == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..length]);
+                }
+                let event = request.starts_with(b"GET /event ");
+                if !event {
+                    playlist_requests += 1;
+                }
+                let body = if event {
+                    page.as_str()
+                } else {
+                    "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n"
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+            playlist_requests
+        });
+        let context = ShioriContext::new(shiori_plugin::iori::IoriHttp::new(move || {
+            reqwest::Client::builder().no_proxy().resolve(host, address)
+        }));
+        let url = format!("http://{address}/event");
+        let regex = shiori_plugin::Regex::new(".*").unwrap();
+        let captures = regex.captures(&url).unwrap();
+        let result = EplusInspector
+            .inspect(&context, &url, &captures, &AnonymousArguments)
+            .await
+            .unwrap();
+        (result, server.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn preparing_event_only_probes_playlist_in_local_build() {
+        let (result, requests) = inspect_event("PREPARING").await;
+        if ALLOW_PREPARING {
+            assert!(matches!(result, InspectResult::Playlist(_)));
+            assert_eq!(requests, 1);
+        } else {
+            assert!(matches!(result, InspectResult::None));
+            assert_eq!(requests, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn started_and_archived_events_still_probe_the_playlist() {
+        for status in ["STARTED", "CONFIRMED_ARCHIVE"] {
+            let (result, requests) = inspect_event(status).await;
+            assert!(matches!(result, InspectResult::Playlist(_)), "{status}");
+            assert_eq!(requests, 1, "{status}");
+        }
     }
 }

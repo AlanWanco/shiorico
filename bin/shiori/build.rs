@@ -33,7 +33,18 @@ fn main() {
         })
         .or_else(get_commit_hash)
         .unwrap_or_else(|| "unknown".to_owned());
-    println!("cargo:rustc-env=SHIORICO_VERSION={version} ({variant}-{hash})");
+    let marker = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.shiorico-local-eplus");
+    let local_eplus = match env::var("SHIORICO_LOCAL_EPLUS").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        Ok(value) => panic!("SHIORICO_LOCAL_EPLUS must be 0 or 1, got {value:?}"),
+        Err(env::VarError::NotPresent) => marker.is_file(),
+        Err(error) => panic!("Invalid SHIORICO_LOCAL_EPLUS: {error}"),
+    };
+    println!("cargo:rerun-if-changed={}", marker.display());
+    let local_suffix = if local_eplus { "; local-eplus" } else { "" };
+    println!("cargo:rustc-env=SHIORICO_VERSION={version} ({variant}-{hash}{local_suffix})");
+    println!("cargo:rerun-if-env-changed=SHIORICO_LOCAL_EPLUS");
     println!("cargo:rerun-if-env-changed=SHIORICO_BUILD_COMMIT");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=windows.manifest.xml");

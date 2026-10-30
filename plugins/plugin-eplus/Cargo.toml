@@ -11,3 +11,7 @@ shiori-plugin.workspace = true
 iori-eplus.workspace = true
 anyhow.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tokio = { workspace = true, features = ["macros"] }
