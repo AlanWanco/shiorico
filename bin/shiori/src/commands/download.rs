@@ -1,3 +1,4 @@
+// Modified by AlanWanco for shiorico; derived from Apache-2.0 iori/Shiori.
 use super::inspect::{InspectorOptions, get_default_external_inspector};
 use crate::{
     ShioriApp,
@@ -444,13 +445,13 @@ impl CacheOptions {
 
             let started_at = SystemTime::now();
             let started_at = started_at.duration_since(UNIX_EPOCH).unwrap().as_millis();
-            cache_dir.push(format!("shiori_{started_at}_{}", rand::random::<u8>()));
+            cache_dir.push(format!("shiorico_{started_at}_{}", rand::random::<u8>()));
 
             if self.opendal {
                 let cache_dir = cache_dir.to_str().expect("Invalid cache directory");
                 let builder = services::Fs::default().root(cache_dir);
                 let op = Operator::new(builder)?.finish();
-                IoriCache::opendal(op, "shiori", true, None)
+                IoriCache::opendal(op, "shiorico", true, None)
             } else if self.stream_dir_cache {
                 IoriCache::stream_dir_file(cache_dir)?
             } else {

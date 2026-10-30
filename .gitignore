@@ -20,6 +20,7 @@ tmp
 *.mp4
 !**/tests/**/*.mp4
 shiori_*
+shiorico_*
 
 # nix
 .direnv

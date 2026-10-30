@@ -1,7 +1,10 @@
+# Modified for shiorico: inherit the upstream workspace license.
 [package]
 name = "iori-sheeta"
 version = "0.1.0"
 edition = "2024"
+
+license.workspace = true
 
 [dependencies]
 anyhow.workspace = true

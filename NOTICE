@@ -1,0 +1,20 @@
+shiorico
+Copyright 2026 AlanWanco (independent fork changes)
+
+This project is derived from iori / Shiori:
+https://github.com/iori-rs/iori
+Original author and contributor attribution is retained in the Git history,
+Cargo manifests, source files, and historical changelogs. The upstream package
+metadata credits Yesterday17 and its contributors.
+
+The inherited iori/Shiori code was provided under the Apache License, Version
+2.0. Its license and applicable notices remain in LICENSE and the source tree.
+Files changed for the independent fork are identified by the Git history and
+by modification notices in the affected source or configuration files.
+
+The combined shiorico application is distributed under GPL-3.0-or-later because
+it includes Bento4. This does not remove the original licenses of individual
+components. See COPYING, LICENSING.md, THIRD-PARTY-NOTICES.md, and LICENSES/.
+
+shiorico is independently maintained by AlanWanco. It is not an official
+upstream iori/Shiori release and does not imply upstream endorsement.

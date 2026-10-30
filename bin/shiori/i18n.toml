@@ -1,4 +1,6 @@
+# Modified for shiorico: keep the existing translation file domain.
 fallback_language = "en-US"
 
 [fluent]
+domain = "shiori"
 assets_dir = "i18n"

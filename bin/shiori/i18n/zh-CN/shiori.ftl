@@ -1,4 +1,5 @@
-shiori-about = 又一个直播下载器
+# Modified for the shiorico application.
+shiori-about = shiorico：基于 iori/Shiori 独立维护的 HLS 与 MPEG-DASH 下载器
 
 download-wait = 未检测到直播流时持续等待开播
 download-wait-interval = 等待重试的间隔秒数（默认 30 秒）；增大间隔可减少对平台的请求。

@@ -1,230 +1,139 @@
+# Modified for shiorico: validate source, licenses, and all assets before publishing.
 name: Release
-
-env:
-  # crates/iori-ffmpeg/build/*.rs expects an FFmpeg git branch/tag,
-  # not the Rust target triple passed by the build matrix.
-  FFMPEG_BRANCH: release/7.1
-
-permissions:
-  contents: write
 
 on:
   workflow_dispatch:
     inputs:
-      binary_name:
-        type: choice
-        description: "Binary name for release"
-        required: true
-        options:
-          - ssadecrypt
-          - shiori
-          - minyami
-        default: ssadecrypt
-      create_release:
+      core_only:
         type: boolean
-        description: "Create a release"
-        default: true
-      build_ffmpeg:
-        type: boolean
-        description: "Build ffmpeg"
+        description: Build only core binaries (omit linked FFmpeg editions)
         default: false
-      features:
-        type: string
-        description: "Custom features to build"
-      archive_suffix:
-        type: choice
-        description: "Suffix for the archive bin filename."
-        options:
-          - "-"
-          - "-core-"
-          - "-ffmpeg-"
+      publish:
+        type: boolean
+        description: Publish the validated draft and then update the version index
+        default: false
+
+permissions:
+  contents: write
 
 jobs:
-  ffmpeg-build:
-    if: inputs.build_ffmpeg == true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: x86_64-pc-windows-gnu
-            os: ubuntu-latest
-          - target: x86_64-apple-darwin
-            os: macOS-latest
-          - target: aarch64-apple-darwin
-            os: macOS-latest
+  build:
+    uses: ./.github/workflows/build.yaml
+    with:
+      core_only: ${{ inputs.core_only }}
+    secrets: inherit
 
-    runs-on: ${{ matrix.os }}
-    continue-on-error: true
-    steps:
-      - name: Setup | Checkout
-        uses: actions/checkout@v2.4.0
-
-      # https://trac.ffmpeg.org/wiki/CompilationGuide/Ubuntu
-      - name: Setup | FFmpeg Build Tools [Linux]
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update -qq && sudo apt-get -y install \
-            autoconf \
-            automake \
-            build-essential \
-            cmake \
-            git-core \
-            libass-dev \
-            libfreetype6-dev \
-            libgnutls28-dev \
-            libsdl2-dev \
-            libtool \
-            libva-dev \
-            libvdpau-dev \
-            libvorbis-dev \
-            libxcb1-dev \
-            libxcb-shm0-dev \
-            libxcb-xfixes0-dev \
-            pkg-config \
-            texinfo \
-            wget \
-            mingw-w64
-          sudo apt-get -y install nasm
-          sudo apt-get -y install libx264-dev
-          sudo apt-get -y install libx265-dev libnuma-dev
-          sudo apt-get -y install libvpx-dev
-          sudo apt-get -y install libfdk-aac-dev
-          sudo apt-get -y install libmp3lame-dev
-          sudo apt-get -y install libopus-dev
-
-      # https://trac.ffmpeg.org/wiki/CompilationGuide/macOS#Compiling
-      - name: Setup | FFmpeg Build Tools [macOS]
-        if: matrix.os == 'macOS-latest'
-        run: |
-          brew install automake fdk-aac lame libass libtool libvorbis libvpx opus sdl shtool texi2html theora x264 x265 xvid nasm
-
-      - name: Build | FFmpeg
-        run: |
-          pushd crates/iori-ffmpeg
-          ./build/build.rs "${{ matrix.target }}" "$FFMPEG_BRANCH"
-          popd
-
-      - name: Deploy | Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffmpeg-${{ matrix.target }}
-          path: crates/iori-ffmpeg/tmp/ffmpeg_build
-
-  create-release:
-    if: inputs.create_release == true
+  source:
     runs-on: ubuntu-latest
-    outputs:
-      release_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch the complete pinned dependency graph
+        run: cargo fetch --locked
+      - name: Fetch pinned FFmpeg source
+        if: inputs.core_only == false
+        run: |
+          revision=$(tr -d '[:space:]' < .versions/ffmpeg)
+          git init target/source-native/ffmpeg
+          git -C target/source-native/ffmpeg remote add origin https://github.com/FFmpeg/FFmpeg.git
+          git -C target/source-native/ffmpeg fetch --depth=1 origin "$revision"
+          git -C target/source-native/ffmpeg checkout --detach FETCH_HEAD
+          test "$(git -C target/source-native/ffmpeg rev-parse HEAD)" = "$revision"
+      - name: Package complete corresponding source
+        env:
+          CORE_ONLY: ${{ inputs.core_only }}
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("bin/shiori/Cargo.toml", "rb"))["package"]["version"])')
+          native_source=()
+          if [[ "$CORE_ONLY" == false ]]; then native_source=(--ffmpeg-source target/source-native/ffmpeg); fi
+          python3 scripts/package-release.py source --version "$version" "${native_source[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shiorico-source
+          path: dist/release/
+          if-no-files-found: error
+
+  release:
+    needs: [build, source]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Determine release tag
-        id: tag
-        shell: bash
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shiorico-*
+          path: dist/release
+          merge-multiple: true
+      - name: Validate complete release materials
+        id: release
+        env:
+          CORE_ONLY: ${{ inputs.core_only }}
         run: |
-          case "${{ inputs.binary_name }}" in
-            shiori) manifest="bin/shiori/Cargo.toml" ;;
-            ssadecrypt) manifest="bin/ssadecrypt/Cargo.toml" ;;
-            minyami) manifest="bin/minyami/Cargo.toml" ;;
-            *)
-              echo "Unsupported binary: ${{ inputs.binary_name }}" >&2
-              exit 1
-              ;;
-          esac
-
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$manifest" | head -n1)
-          if [ -z "$version" ]; then
-            echo "Failed to determine version from $manifest" >&2
-            exit 1
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("bin/shiori/Cargo.toml", "rb"))["package"]["version"])')
+          variants=(core ffmpeg)
+          if [[ "$CORE_ONLY" == true ]]; then variants=(core); fi
+          python3 scripts/validate-release.py dist/release --version "$version" --variants "${variants[@]}"
+          echo "tag=shiorico-v$version" >> "$GITHUB_OUTPUT"
+      - name: Stage a draft with all validated materials
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          Path('target').mkdir(exist_ok=True)
+          Path('target/release-notes.md').write_text(
+              'Independently maintained continuation of iori / Shiori.\n\n'
+              'Binary archives contain licenses, native build information, and a link to the '
+              'corresponding source archive. The source archive includes Cargo dependencies, '
+              'Bento4, and FFmpeg source when linked. Verify files against SHA256SUMS.\n\n'
+              'Inherited components retain their original licenses. The combined application '
+              'is distributed under GPL-3.0-or-later; see LICENSING.md in the archives.\n'
+          )
+          PY
+          gh release create "$RELEASE_TAG" --draft --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" --notes-file target/release-notes.md
+          assets=(dist/release/*.tar.gz dist/release/*.zip dist/release/SHA256SUMS)
+          gh release upload "$RELEASE_TAG" "${assets[@]}"
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > target/uploaded-assets.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('dist/release')
+          expected = {p.name for p in root.iterdir() if p.suffix in {'.gz', '.zip'} or p.name == 'SHA256SUMS'}
+          actual = set(Path('target/uploaded-assets.txt').read_text().splitlines())
+          assert expected == actual, f'Release assets differ: missing={expected-actual}, extra={actual-expected}'
+          PY
+      - name: Publish the validated draft
+        if: inputs.publish == true
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest
+      - name: Update the version index after publication
+        if: inputs.publish == true
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path('.versions/shiorico')
+          text = path.read_text()
+          tag = os.environ['RELEASE_TAG']
+          if tag not in text.splitlines():
+              path.write_text(text.rstrip() + '\n' + tag + '\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .versions/shiorico
+          if ! git diff --cached --quiet; then
+            git commit -m "记录 shiorico 已发布版本 $RELEASE_TAG"
+            git push origin "HEAD:${{ github.ref_name }}"
           fi
-
-          short_sha=$(git rev-parse --short "$GITHUB_SHA")
-          tag="${{ inputs.binary_name }}-v${version}-${short_sha}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Using release tag: $tag"
-
-      - name: Create and push tag
-        shell: bash
-        run: |
-          tag="${{ steps.tag.outputs.tag }}"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Tag already exists on origin: $tag"
-            exit 0
-          fi
-
-          git tag "$tag" "$GITHUB_SHA"
-          git push origin "refs/tags/$tag"
-
-      - uses: taiki-e/create-gh-release-action@v1
-        with:
-          prefix: ${{ inputs.binary_name }}
-          ref: refs/tags/${{ steps.tag.outputs.tag }}
-          title: ${{ steps.tag.outputs.tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-  upload-assets:
-    needs: [create-release, ffmpeg-build]
-    if: |
-      always() &&
-      !contains(needs.*.result, 'failure') &&
-      !contains(needs.*.result, 'cancelled')
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-gnu
-            os: ubuntu-latest
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: refs/tags/${{ needs.create-release.outputs.release_tag }}
-      - name: Setup | Protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup | Compiled FFmpeg
-        if: inputs.build_ffmpeg == true
-        uses: actions/download-artifact@v4
-        with:
-          name: ffmpeg-${{ matrix.target }}
-          path: ${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build
-
-      - name: Setup | Environment [-nix]
-        if: inputs.build_ffmpeg == true && matrix.target != 'x86_64-pc-windows-gnu'
-        run: |
-          echo FFMPEG_INCLUDE_DIR="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/include" >> $GITHUB_ENV
-          echo FFMPEG_PKG_CONFIG_PATH="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/lib/pkgconfig" >> $GITHUB_ENV
-          echo PKG_CONFIG_PATH_FOR_TARGET="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/lib/pkgconfig" >> $GITHUB_ENV
-          echo PKG_CONFIG_ALLOW_CROSS=1 >> $GITHUB_ENV
-
-      - name: Setup | Environment [Windows]
-        if: inputs.build_ffmpeg == true && matrix.target == 'x86_64-pc-windows-gnu'
-        run: |
-          sudo apt-get update -qq && sudo apt-get -y install \
-            mingw-w64
-          echo FFMPEG_INCLUDE_DIR="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/include" >> $GITHUB_ENV
-          echo FFMPEG_LIBS_DIR="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/lib" >> $GITHUB_ENV
-          echo PKG_CONFIG_PATH_FOR_TARGET="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/lib/pkgconfig" >> $GITHUB_ENV
-          echo PKG_CONFIG_ALLOW_CROSS=1 >> $GITHUB_ENV
-
-      - uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          build-tool: cargo
-          bin: ${{ inputs.binary_name }}
-          archive: "$bin${{ inputs.archive_suffix }}$target"
-          target: ${{ matrix.target }}
-          features: ${{ inputs.features || '' }}
-          tar: unix
-          zip: windows
-          ref: refs/tags/${{ needs.create-release.outputs.release_tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}

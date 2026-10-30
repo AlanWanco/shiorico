@@ -1,3 +1,4 @@
+// Modified by AlanWanco for shiorico; derived from Apache-2.0 iori/Shiori.
 use clap::{Parser, Subcommand, builder::styling};
 use clap_handler::Handler;
 
@@ -17,7 +18,7 @@ pub const STYLES: styling::Styles = styling::Styles::styled()
     .placeholder(styling::AnsiColor::Cyan.on_default());
 
 #[derive(Parser, Handler, Clone)]
-#[clap(name = "shiori", version = env!("SHIORI_VERSION"), author, styles = STYLES)]
+#[clap(name = "shiorico", version = env!("SHIORICO_VERSION"), author, styles = STYLES)]
 #[clap(about = ll!("shiori-about"))]
 pub struct ShioriArgs {
     #[clap(subcommand)]

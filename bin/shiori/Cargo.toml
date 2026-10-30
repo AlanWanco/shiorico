@@ -1,11 +1,12 @@
+# Modified for shiorico; upstream source notices remain applicable.
 [package]
-name = "shiori"
-description = "A brand new video stream downloader"
-version = "0.3.0-awcfork"
+name = "shiorico"
+description = "HLS and MPEG-DASH downloader, independently maintained from iori/Shiori"
+version = "0.4.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
-license.workspace = true
+license = "GPL-3.0-or-later"
 
 [dependencies]
 iori = { workspace = true, features = ["opendal-fs"] }
@@ -68,6 +69,10 @@ default = ["proxy"]
 ffmpeg = ["iori-ffmpeg"]
 proxy = ["iori/proxy"]
 
-[[bin]]
+[lib]
 name = "shiori"
+path = "src/lib.rs"
+
+[[bin]]
+name = "shiorico"
 path = "src/main.rs"

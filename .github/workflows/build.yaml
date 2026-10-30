@@ -1,269 +1,112 @@
+# Modified for shiorico: each target/variant builds and packages independently.
 name: Build
-on: [push]
 
-env:
-  # crates/iori-ffmpeg/build/*.rs expects an FFmpeg git branch/tag,
-  # not the Rust target triple passed by the build matrix.
-  FFMPEG_BRANCH: release/7.1
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      core_only:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
-  ffmpeg-build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            os: macOS-latest
-          - target: aarch64-apple-darwin
-            os: macOS-latest
-
-    runs-on: ${{ matrix.os }}
-    continue-on-error: true
-    steps:
-      - name: Setup | Checkout
-        uses: actions/checkout@v2.4.0
-
-      # https://trac.ffmpeg.org/wiki/CompilationGuide/Ubuntu
-      - name: Setup | FFmpeg Build Tools [Linux]
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update -qq && sudo apt-get -y install \
-            autoconf \
-            automake \
-            build-essential \
-            cmake \
-            git-core \
-            libass-dev \
-            libfreetype6-dev \
-            libgnutls28-dev \
-            libsdl2-dev \
-            libtool \
-            libva-dev \
-            libvdpau-dev \
-            libvorbis-dev \
-            libxcb1-dev \
-            libxcb-shm0-dev \
-            libxcb-xfixes0-dev \
-            pkg-config \
-            texinfo \
-            wget \
-            yasm \
-            zlib1g-dev \
-            mingw-w64
-          sudo apt-get -y install nasm
-          sudo apt-get -y install libx264-dev
-          sudo apt-get -y install libx265-dev libnuma-dev
-          sudo apt-get -y install libvpx-dev
-          sudo apt-get -y install libfdk-aac-dev
-          sudo apt-get -y install libmp3lame-dev
-          sudo apt-get -y install libopus-dev
-
-      # https://trac.ffmpeg.org/wiki/CompilationGuide/macOS#Compiling
-      - name: Setup | FFmpeg Build Tools [macOS]
-        if: matrix.os == 'macOS-latest'
-        run: |
-          brew install automake fdk-aac lame libass libtool libvorbis libvpx opus sdl shtool texi2html theora x264 x265 xvid nasm
-
-      - name: Build | FFmpeg
-        run: |
-          pushd crates/iori-ffmpeg
-          ./build/build.rs "${{ matrix.target }}" "$FFMPEG_BRANCH"
-          popd
-
-      - name: Deploy | Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffmpeg-${{ matrix.target }}
-          path: crates/iori-ffmpeg/tmp/ffmpeg_build
-
-  windows-ffmpeg-build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup | Checkout
-        uses: actions/checkout@v2.4.0
-
-      - name: Setup | FFmpeg Build Tools [Windows]
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get -y install build-essential git-core mingw-w64 nasm pkg-config
-
-      - name: Build | Windows FFmpeg
-        run: |
-          pushd crates/iori-ffmpeg
-          ./build/build.rs x86_64-pc-windows-gnu "$FFMPEG_BRANCH"
-          popd
-
-      - name: Validate | Windows FFmpeg libraries
-        run: |
-          for library in avcodec avdevice avfilter avformat avutil swresample swscale; do
-            archive="crates/iori-ffmpeg/tmp/ffmpeg_build/lib/lib${library}.a"
-            test -s "$archive"
-            x86_64-w64-mingw32-objdump -f "$archive" | grep 'file format pe-x86-64' >/dev/null
-          done
-
-      - name: Deploy | Upload Windows FFmpeg
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffmpeg-x86_64-pc-windows-gnu
-          path: crates/iori-ffmpeg/tmp/ffmpeg_build
-
   build:
+    name: ${{ matrix.variant }} / ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
+        variant: ${{ fromJSON(inputs.core_only && '["core"]' || '["core","ffmpeg"]') }}
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-gnu
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            name: iori-x86_64-unknown-linux-gnu
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-            name: iori-aarch64-unknown-linux-gnu.tar.gz
-          # - target: x86_64-unknown-linux-musl
-          #   os: ubuntu-latest
-          #   name: iori-x86_64-unknown-linux-musl
           - target: x86_64-apple-darwin
-            os: macOS-latest
-            name: iori-x86_64-apple-darwin
+            os: macos-latest
           - target: aarch64-apple-darwin
-            os: macOS-latest
-            name: iori-arm64-apple-darwin
-
-    needs: [ffmpeg-build]
+            os: macos-latest
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
+    env:
+      SHIORICO_BUILD_COMMIT: ${{ github.sha }}
     steps:
-      - name: Setup | Checkout
-        uses: actions/checkout@v2.4.0
-
-      - name: Setup | Cache Cargo
-        uses: actions/cache@v4.2.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Setup | Cache Cargo Target
-        uses: actions/cache@v4.2.0
-        with:
-          path: target
-          key: ${{ matrix.target }}-cargo-target
-
-      - name: Setup | Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Setup | Protoc
-        uses: arduino/setup-protoc@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup | Compiled FFmpeg
-        uses: actions/download-artifact@v4
-        with:
-          name: ffmpeg-${{ matrix.target }}
-          path: ${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build
-
-      - name: Setup | Environment [-nix]
-        if: matrix.target != 'x86_64-pc-windows-gnu'
-        run: |
-          echo FFMPEG_INCLUDE_DIR="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/include" >> $GITHUB_ENV
-          echo FFMPEG_PKG_CONFIG_PATH="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/lib/pkgconfig" >> $GITHUB_ENV
-          echo PKG_CONFIG_PATH_FOR_TARGET="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/lib/pkgconfig" >> $GITHUB_ENV
-          echo PKG_CONFIG_ALLOW_CROSS=1 >> $GITHUB_ENV
-
-      # - name: Setup tmate session
-      #   if: matrix.target == 'x86_64-pc-windows-gnu'
-      #   uses: mxschmitt/action-tmate@v3
-      #   with:
-      #     detached: true
-
-      - name: Build | Build
-        shell: bash
-        run: |
-          cargo build --release --locked --features shiori/ffmpeg --target ${{ matrix.target }} --workspace --exclude srr
-
-      - name: PostBuild | Prepare artifacts
-        run: |
-          cd target/${{ matrix.target }}/release
-          strip minyami || true
-          strip ssadecrypt || true
-          strip shiori || true
-          mkdir ../../../${{ matrix.name }}
-          mv minyami ssadecrypt shiori ../../../${{ matrix.name }}
-          cd -
-
-      - name: Deploy | Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}
-          path: ${{ matrix.name }}/
-
-  windows-build:
-    needs: [windows-ffmpeg-build]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup | Checkout
-        uses: actions/checkout@v2.4.0
-
-      - name: Setup | Cache Cargo
-        uses: actions/cache@v4.2.0
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Setup | Cache Cargo Target
-        uses: actions/cache@v4.2.0
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+      - uses: taiki-e/install-action@v2
         with:
-          path: target
-          key: windows-cargo-build-v2
-
-      - name: Setup | Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu
-
-      - name: Setup | Protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup | Compiled FFmpeg
-        uses: actions/download-artifact@v4
-        with:
-          name: ffmpeg-x86_64-pc-windows-gnu
-          path: ${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build
-
-      - name: Setup | Environment [Windows]
+          tool: cargo-about@0.9.3
+      - name: Install native tools [Linux]
+        if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq && sudo apt-get -y install mingw-w64
-          echo FFMPEG_INCLUDE_DIR="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/include" >> $GITHUB_ENV
-          echo FFMPEG_LIBS_DIR="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/lib" >> $GITHUB_ENV
-          echo PKG_CONFIG_PATH_FOR_TARGET="${{ github.workspace }}/crates/iori-ffmpeg/tmp/ffmpeg_build/lib/pkgconfig" >> $GITHUB_ENV
-          echo PKG_CONFIG_ALLOW_CROSS=1 >> $GITHUB_ENV
-
-      - name: Build | Windows Shiori
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake pkg-config nasm clang
+          if [[ '${{ matrix.target }}' == x86_64-pc-windows-gnu ]]; then
+            sudo apt-get install -y mingw-w64
+          fi
+      - name: Install native tools [macOS]
+        if: runner.os == 'macOS'
+        run: brew install nasm pkg-config cmake
+      - name: Build pinned FFmpeg and retain configuration
+        if: matrix.variant == 'ffmpeg'
+        run: bash scripts/build-ffmpeg.sh '${{ matrix.target }}'
+      - name: Build shiorico
         shell: bash
-        run: cargo build --release --locked --features shiori/ffmpeg --target x86_64-pc-windows-gnu --workspace --exclude srr
-
-      - name: PostBuild | Prepare Windows artifacts
-        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_VARIANT: ${{ matrix.variant }}
         run: |
-          cd target/x86_64-pc-windows-gnu/release
-          x86_64-w64-mingw32-strip minyami.exe ssadecrypt.exe shiori.exe
-          x86_64-w64-mingw32-objdump -f shiori.exe | grep 'file format pei-x86-64' >/dev/null
-          mkdir ../../../iori-x86_64-pc-windows-gnu
-          mv minyami.exe ssadecrypt.exe shiori.exe ../../../iori-x86_64-pc-windows-gnu/
-
-      - name: Deploy | Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+          features=()
+          if [[ "$RELEASE_VARIANT" == ffmpeg ]]; then features=(--features ffmpeg); fi
+          cargo build --release --locked -p shiorico --target "$RELEASE_TARGET" "${features[@]}"
+          cargo fetch --locked
+      - name: Smoke test native executable
+        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          target/${{ matrix.target }}/release/shiorico --version
+          target/${{ matrix.target }}/release/shiorico --help
+      - name: Verify Windows executable format
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: |
+          x86_64-w64-mingw32-objdump -f target/x86_64-pc-windows-gnu/release/shiorico.exe | grep 'file format pei-x86-64' >/dev/null
+      - name: Package binary and license notices
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_VARIANT: ${{ matrix.variant }}
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("bin/shiori/Cargo.toml", "rb"))["package"]["version"])')
+          native_info=()
+          if [[ "$RELEASE_VARIANT" == ffmpeg ]]; then native_info=(--ffmpeg-info "$SHIORICO_FFMPEG_INFO"); fi
+          python3 scripts/package-release.py binary --version "$version" --target "$RELEASE_TARGET" \
+            --variant "$RELEASE_VARIANT" "${native_info[@]}"
+      - uses: actions/upload-artifact@v4
         with:
-          name: iori-x86_64-pc-windows-gnu
-          path: iori-x86_64-pc-windows-gnu/
+          name: shiorico-${{ matrix.variant }}-${{ matrix.target }}
+          path: dist/release/
+          if-no-files-found: error

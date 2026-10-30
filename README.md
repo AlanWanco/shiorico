@@ -1,113 +1,60 @@
-# iori
+<!-- Modified by AlanWanco for the independently maintained shiorico fork. -->
+# shiorico
 
-A brand new HLS / MPEG-Dash stream downloader, with support for both VoD and Live streaming.
+支持 HLS / MPEG-DASH、点播和直播的命令行下载器，由 AlanWanco 基于 [iori / Shiori](https://github.com/iori-rs/iori) 独立维护。保留原作者 Yesterday17、其他贡献者的署名、完整 Git 历史和历史 CHANGELOG。
 
-## Download
+项目仓库为 <https://github.com/AlanWanco/shiorico>，发行文件将放在该仓库的 Releases。此项目提供免费、开源版本；不是上游官方发行版。
 
-You can get the pre-compiled executable files from `artifacts`. (Like [this](https://github.com/Yesterday17/iori/actions/runs/11423831843))
+## 下载与运行
 
-## Project Structure
+发行包按 `shiorico-core-<target>` 和 `shiorico-ffmpeg-<target>` 命名。Windows 使用 ZIP；Linux 和 macOS 使用 tar.gz。包内包含程序、许可证、第三方声明、源码地址和构建信息。同一 Release 还应提供完整对应源码包、FFmpeg 构建配置和 `SHA256SUMS`。
 
-- `bin`: Contains the main executable crates, like `minyami` and `shiori`.
-- `crates`: Core library crates, such as `iori` (the downloader core) and `iori-ssa` (Sample-AES decryption).
-- `plugins`: Plugin system related crates, like `shiori-plugin`, `shiori-plugin-showroom`.
-- `platforms`: Video platform-specific implementations, such as `iori-nicolive` and `iori-showroom`.
+`core` 不链接可选的 FFmpeg 库，仍包含 Bento4。`ffmpeg` 额外链接 FFmpeg 库。两者的 `--pipe-mux` 转播功能都会调用 PATH 中另行安装的 `ffmpeg` 命令。
 
-## Quickstart
-
-### 推流用部分命令
-```
-# 只加载最新三条地址，针对一些只提供vod的转播很有效
---initial-segments 3
-
-# 保留所有已下载的分片
---no-recycle
-
-# 等待开播
---wait
+```bash
+shiorico --version
+shiorico download 'https://example.com/playlist.m3u8' -o recording.mkv
+shiorico inspect 'https://example.com/playlist.m3u8'
 ```
 
-### 导入推流地址
-```
-#微博推流
-export WEIBO_RTMP="rtmp://pswb.live.weibo.com/alicdn/"
-export WEIBO_RTMP_ID=""
-export WEIBO_RTMP_KEY="?auth_key=-0-0-"
+需要持续等待开播时加 `--wait`，用 `--wait-interval 60` 调整重试间隔。`--initial-segments 3` 只限制首次抓取直播列表的分片数量，用于减少启动延迟。`--no-recycle` 保留已下载分片。
 
-echo "$WEIBO_RTMP"
-echo "$WEIBO_RTMP_ID"
-echo "$WEIBO_RTMP_KEY"
-echo "m3u8地址：https://plwb.live.weibo.com/alicdn/${WEIBO_RTMP_ID}.m3u8"
-
-#b站推流
-export BILI_RTMP="rtmp://live-push.bilivideo.com/live-bvc/"
-export BILI_RTMP_KEY="?streamname=live_&key=&schedule=rtmp&pflag=2"
-
-echo "$BILI_RTMP"
-echo "$BILI_RTMP_KEY"
-```
-### eplus推流
-```
-# 日区限定
-export EPLUS_USER="youremail@gmail.com" 
-export EPLUS_PWD="password" 
-# 日区/非日区共用，不支持dash
-export EPLUS_URL="https://live.eplus.jp/<event_id>"
-
-echo "$EPLUS_USER"
-echo "$EPLUS_PWD"
-echo "$EPLUS_URL"
-
-# 保留所有分片+只加载最新三条地址
-shiori-dev download "${EPLUS_URL}" \
---eplus-username "${EPLUS_USER}" \
---eplus-password "${EPLUS_PWD}" \
---pipe-mux --initial-segments 3 \
---output "${WEIBO_RTMP}${WEIBO_RTMP_ID}${WEIBO_RTMP_KEY}" \
---no-tui --no-recycle --wait
-```
-### nico转播
-```
-export NICO_LIVE="https://live.nicovideo.jp/watch/lv34567890"
-export NICO_SESSION=""
-
-echo "$NICO_LIVE"
-echo "$NICO_SESSION"
-
-# 保留所有分片+只加载最新三条地址
-shiori-dev download "$NICO_LIVE" \
---no-tui --nico-user-session "$NICO_SESSION" \
--M -o "${BILI_RTMP}${BILI_RTMP_KEY}" --initial-segments 3 --no-recycle
-```
-### Sheeta
-```
-export RTMP_URL=""
-export SHEETA_URL=""
-# 支持
-# https://nicochannel.jp/miitanu2525/live/sm7BFk88kF85uNUsLnxjjhtW
-# https://qlover.jp/hayaraki/live/smcpDr6u9LnNBNjL74DckHDo
-# https://audee-membership.jp/okuma-wakana/live/smUgMcfCHJFoF9fvA4M6czgW
-
-# 保留所有分片+只加载最新三条地址
-shiori-dev download "${SHEETA_URL}" -M --output "${RTMP_URL}" --no-tui --wait --initial-segments 3 --no-recycle
-```
-### m3u8普适性转播
-```
-export SOURCE_M3U8=""
-export SOURCE_HLS_KEY="" # 可选
-echo "$SOURCE_M3U8"
-echo "$SOURCE_HLS_KEY"
-
-# 保留所有分片+只加载最新三条地址
-shiori-dev download "${SOURCE_M3U8}" \
---key "${SOURCE_HLS_KEY}" --pipe-mux --initial-segments 3 \
---output "${WEIBO_RTMP}${WEIBO_RTMP_ID}${WEIBO_RTMP_KEY}" \
---no-tui --no-recycle
+```bash
+# 将 RTMP_URL 设置为自己的接收地址；不要把凭据粘贴进日志或公开报告。
+shiorico download "$SOURCE_URL" --pipe-mux --initial-segments 3 \
+  --output "$RTMP_URL" --no-tui --wait
 ```
 
-## Road to 1.0
+平台登录参数见 `shiorico download --help`。自更新使用本项目的仓库、版本索引和对应构建类型：
 
-- [ ] Separate decrypt and download
-- [ ] Support `EXT-X-DISCONTINUITY` for HLS
-- [ ] Support custom descryption logic
-- [ ] Support custom `StreamingSource` for plugins
+```bash
+shiorico update
+shiorico update --version 0.4.0
+```
+
+`.versions/shiorico` 只在正式 Release 发布成功后记录 tag；没有已发布版本时，更新器会明确报错。
+
+## 构建
+
+需要稳定版 Rust、C/C++ 编译工具、CMake 和 protoc。
+
+```bash
+cargo build --release --locked -p shiorico
+cargo test --locked -p shiorico --lib
+```
+
+应用源码目录暂时保留 `bin/shiori`，内部 `iori` 库、插件名和翻译资源 domain 保持兼容。主 Cargo package 和可执行文件名为 `shiorico`。目录与内部库名称不必同步重命名。
+
+完整打包、对应源码和发布流程见 [docs/RELEASING.md](docs/RELEASING.md)。源码包包含 Cargo 依赖和 Bento4，可按其中说明离线构建。
+
+## 项目结构
+
+- `bin/shiori`：shiorico CLI、平台插件注册、inspect、download、update。
+- `crates`：iori 下载核心、HLS / DASH、解密和可选 FFmpeg 集成。
+- `plugins` 与 `platforms`：平台识别、API 和专用直播 source。
+- `scripts`：固定版本 FFmpeg 构建、许可生成、打包和发行校验。
+- `bin/*/CHANGELOG.md`：保留的历史变更记录。
+
+## 许可与来源
+
+继承的 iori 代码保留 Apache-2.0 许可及原有声明，见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。包含 Bento4 的 shiorico 组合程序按 GPL-3.0-or-later 发行，见 [COPYING](COPYING)、[LICENSING.md](LICENSING.md) 和 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。免费发行不添加“禁止商业使用”的许可限制。

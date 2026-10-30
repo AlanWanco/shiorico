@@ -1,4 +1,5 @@
-shiori-about = Yet another m3u8 downloader
+# Modified for the shiorico application.
+shiori-about = shiorico: an HLS and MPEG-DASH downloader, based on iori/Shiori
 
 download-wait = Wait for stream to start when no stream is detected
 download-wait-interval = Seconds between wait retries (default: 30); use a longer interval to reduce requests to the platform.

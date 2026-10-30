@@ -3864,52 +3864,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b135058874815f8f13edae644ceedb659f7238fe4a9e2b1bdceecc72dc659b35"
 
 [[package]]
-name = "shiori"
-version = "0.3.0-awcfork"
-dependencies = [
- "anyhow",
- "async-recursion",
- "base64",
- "cfg-if",
- "chrono",
- "clap",
- "clap-handler",
- "crossterm 0.29.0",
- "fake_user_agent",
- "i18n-embed",
- "i18n-embed-fl",
- "iori",
- "iori-eplus",
- "iori-ffmpeg",
- "iori-gigafile",
- "iori-nicolive",
- "iori-radiko",
- "iori-showroom",
- "log",
- "rand 0.9.2",
- "ratatui",
- "regex",
- "reqwest",
- "rmp-serde",
- "rust-embed",
- "self_update",
- "serde",
- "shiori-plugin",
- "shiori-plugin-eplus",
- "shiori-plugin-gigafile",
- "shiori-plugin-niconico",
- "shiori-plugin-radiko",
- "shiori-plugin-sheeta",
- "shiori-plugin-showroom",
- "shlex",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uri-match",
- "winresource",
-]
-
-[[package]]
 name = "shiori-plugin"
 version = "0.1.0"
 dependencies = [
@@ -3986,6 +3940,52 @@ dependencies = [
  "anyhow",
  "iori-showroom",
  "shiori-plugin",
+]
+
+[[package]]
+name = "shiorico"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "async-recursion",
+ "base64",
+ "cfg-if",
+ "chrono",
+ "clap",
+ "clap-handler",
+ "crossterm 0.29.0",
+ "fake_user_agent",
+ "i18n-embed",
+ "i18n-embed-fl",
+ "iori",
+ "iori-eplus",
+ "iori-ffmpeg",
+ "iori-gigafile",
+ "iori-nicolive",
+ "iori-radiko",
+ "iori-showroom",
+ "log",
+ "rand 0.9.2",
+ "ratatui",
+ "regex",
+ "reqwest",
+ "rmp-serde",
+ "rust-embed",
+ "self_update",
+ "serde",
+ "shiori-plugin",
+ "shiori-plugin-eplus",
+ "shiori-plugin-gigafile",
+ "shiori-plugin-niconico",
+ "shiori-plugin-radiko",
+ "shiori-plugin-sheeta",
+ "shiori-plugin-showroom",
+ "shlex",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uri-match",
+ "winresource",
 ]
 
 [[package]]

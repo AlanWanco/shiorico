@@ -1,11 +1,12 @@
+# Modified for the independently maintained shiorico fork.
 [workspace]
 members = ["bin/*", "crates/*", "plugins/*", "platforms/*"]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
-authors = ["Yesterday17 <mmf@mmf.moe>"]
-repository = "https://github.com/Yesterday17/iori"
+authors = ["AlanWanco", "Yesterday17 <mmf@mmf.moe>"]
+repository = "https://github.com/AlanWanco/shiorico"
 license = "Apache-2.0"
 
 [workspace.dependencies]

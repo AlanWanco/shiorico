@@ -1,0 +1,16 @@
+# Third-party license policy for the GPLv3 combined application.
+# Apache-2.0 remains the license of inherited iori libraries.
+accepted = [
+  "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT", "BSD-2-Clause", "BSD-3-Clause",
+  "ISC", "Unlicense", "Zlib", "Unicode-3.0", "Unicode-DFS-2016", "CC0-1.0", "BSL-1.0",
+  "MPL-2.0", "OpenSSL", "GPL-3.0-or-later", "LGPL-2.1-or-later",
+  "CDLA-Permissive-2.0",
+]
+ignore-build-dependencies = false
+ignore-dev-dependencies = true
+
+# The wrapper's Cargo metadata does not describe the bundled C++ license.
+# Bento4 source headers explicitly permit GPL-2.0-or-later; this application
+# distributes the combined work under GPL-3.0-or-later.
+[bento4-src]
+accepted = ["GPL-2.0-or-later"]
