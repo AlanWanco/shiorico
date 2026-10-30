@@ -86,7 +86,6 @@ def validate(directory: Path, version: str, variants: list[str], targets: list[s
                 target,
                 source_revision,
             ), f"Source/binary mismatch: {archive.name}"
-            assert info["eplus_preparing_policy"] == "stop", f"Local Eplus policy in release: {archive.name}"
             assert info["source_archive"] == source.name, f"Incorrect source link: {archive.name}"
             assets.append(archive)
             if variant == "ffmpeg":

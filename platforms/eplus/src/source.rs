@@ -69,15 +69,23 @@ impl EplusSource {
         })
     }
 
-    /// Set the maximum number of segments to keep from the first playlist fetch.
+    /// Limit the first live playlist fetch, keeping archive downloads complete.
     pub fn with_initial_segment_limit(mut self, limit: Option<usize>) -> Self {
-        self.inner = self.inner.with_initial_segment_limit(limit);
+        self.inner = self.inner.with_initial_segment_limit(
+            limit.filter(|_| !EplusClient::is_archive_playlist(&self.playlist_url)),
+        );
         self
     }
 
     /// Stop polling when no new segments arrive within `timeout`.
     pub fn with_idle_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.inner = self.inner.with_idle_timeout(timeout);
+        self
+    }
+
+    /// Retry the current playlist if it becomes unavailable during startup.
+    pub fn with_manifest_retry_interval(mut self, interval: Option<Duration>) -> Self {
+        self.inner = self.inner.with_manifest_retry_interval(interval);
         self
     }
 

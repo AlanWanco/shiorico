@@ -17,7 +17,13 @@ shiorico download 'https://example.com/playlist.m3u8' -o recording.mkv
 shiorico inspect 'https://example.com/playlist.m3u8'
 ```
 
-公开版遇到 Eplus 的 `PREPARING`（准备中）状态会停止取流，即使播放列表已经可访问。需要持续等待开播时加 `--wait`，用 `--wait-interval 60` 调整重试间隔。`--initial-segments 3` 只限制首次抓取直播列表的分片数量，用于减少启动延迟。`--no-recycle` 保留已下载分片。
+需要持续等待开播时加 `--wait`，用 `--wait-interval 60` 调整重试间隔。`--initial-segments 3` 只限制首次抓取直播列表的分片数量，用于减少启动延迟。`--no-recycle` 保留已下载分片。
+
+Eplus 活动结束且回放上线后会自动下载回放。加 `--wait` 可等待回放发布及播放列表就绪；只想下载回放时使用 `--eplus-archive`，它不会回退到直播流。回放始终从头下载，不受 `--initial-segments` 限制。
+
+```bash
+shiorico download 'https://live.eplus.jp/EVENT_ID' --eplus-archive --wait --wait-interval 60 -o archive.mkv
+```
 
 ```bash
 # 将 RTMP_URL 设置为自己的接收地址；不要把凭据粘贴进日志或公开报告。

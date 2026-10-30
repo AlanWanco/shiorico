@@ -17,14 +17,6 @@ python3 scripts/package-release.py binary --version 0.4.0 \
 
 版本未提交时，打包信息会标记 `-dirty`，发行校验会拒绝发布。`SHIORICO_BUILD_COMMIT` 在 CI 中设为完整 commit；源码包以 `SOURCE_REVISION` 保存相同标识。不为未提交状态生成虚假的正式版本索引。
 
-## Eplus 本地与公开构建
-
-公开源码默认在 Eplus `PREPARING`（准备中）时返回无可下载源；加 `--wait` 时沿用现有等待间隔重试，不开始下载分片。公开 Actions 对 core 和 FFmpeg 版均固定 `SHIORICO_LOCAL_EPLUS=0`，发行校验拒绝本地策略。
-
-如需本地构建在准备中仍探测可访问的播放列表，在仓库根目录创建 `.shiorico-local-eplus`，再正常执行上述 `cargo build`。该标记已被 Git 忽略，不进入公开仓库或源码包；本机已编译程序的行为不会随标记变化，需重新编译。也可在构建命令前显式设置 `SHIORICO_LOCAL_EPLUS=1`；`0` 强制公开策略并覆盖本地标记。环境变量在编译时读取，运行时不提供绕过参数。
-
-本地版的 `--version` 增加 `local-eplus` 标识，打包信息记录 `eplus_preparing_policy: probe`；公开包记录 `stop`。本地版仍要求播放列表有效，准备中不会保证已经有可用分片。其他 Eplus 状态与选流流程保持既有行为。
-
 ## FFmpeg 版
 
 `.versions/ffmpeg` 固定完整 FFmpeg commit，目前为 FFmpeg n7.1.3 对应提交。`scripts/build-ffmpeg.sh` 从固定提交构建，禁用外部库自动检测，保存实际 `configure` 参数、`config.h`、`ffbuild/config.mak` 及 FFmpeg 许可正文。不依赖浮动 release branch。

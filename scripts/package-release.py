@@ -35,12 +35,13 @@ def revision() -> str:
     return result
 
 
-def eplus_preparing_policy() -> str:
+def validate_release_build() -> None:
     value = os.environ.get("SHIORICO_LOCAL_EPLUS")
     if value not in (None, "0", "1"):
         raise ValueError("SHIORICO_LOCAL_EPLUS must be 0 or 1")
     local = value == "1" or (value is None and (ROOT / ".shiorico-local-eplus").is_file())
-    return "probe" if local else "stop"
+    if local:
+        raise RuntimeError("Release packaging requires a standard build")
 
 
 def archive_tree(source: Path, output: Path) -> None:
@@ -159,6 +160,7 @@ def make_source(args: argparse.Namespace) -> Path:
 
 
 def make_binary(args: argparse.Namespace) -> Path:
+    validate_release_build()
     executable = "shiorico.exe" if "windows" in args.target else "shiorico"
     binary = args.binary or ROOT / "target" / args.target / "release" / executable
     if not binary.is_file():
@@ -182,7 +184,6 @@ def make_binary(args: argparse.Namespace) -> Path:
             "version": args.version,
             "variant": args.variant,
             "target": args.target,
-            "eplus_preparing_policy": eplus_preparing_policy(),
             "source_revision": revision(),
             "source_archive": source_name,
             "source_url": source_url,

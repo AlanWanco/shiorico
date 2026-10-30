@@ -31,7 +31,7 @@ impl ShioriPlugin for EplusPlugin {
         );
         command.add_boolean_argument(
             "eplus-archive",
-            "[Eplus] Prefer archive/VOD stream over live stream.",
+            "[Eplus] Download the archive/VOD stream only; combine with --wait to wait for it.",
         );
         command.add_argument(
             "eplus-refresh-interval",
@@ -81,7 +81,6 @@ impl Inspect for EplusInspector {
     ) -> anyhow::Result<InspectResult> {
         let username = args.get_string("eplus-username");
         let password = args.get_string("eplus-password");
-        let prefer_archive = args.get_boolean("eplus-archive");
 
         // Create client using the shared IoriHttp cookie store.
         // After login, session cookies are stored in context.http's cookie jar.
@@ -105,14 +104,23 @@ impl Inspect for EplusInspector {
             return Ok(InspectResult::None);
         }
 
+        if matches!(
+            event_data.delivery_status,
+            DeliveryStatus::Stopped | DeliveryStatus::WaitConfirmArchived
+        ) {
+            log::info!("Eplus event has ended; waiting for the archive to be published.");
+            return Ok(InspectResult::None);
+        }
+
         if event_data.m3u8_urls.is_empty() {
             log::warn!("No m3u8 URLs found on the page.");
             return Ok(InspectResult::None);
         }
 
-        // Select the best playlist URL
+        let archive_only = args.get_boolean("eplus-archive")
+            || event_data.delivery_status == DeliveryStatus::ConfirmedArchive;
         let Some(playlist_url) = client
-            .select_best_playlist(&event_data.m3u8_urls, prefer_archive)
+            .select_best_playlist(&event_data.m3u8_urls, archive_only)
             .await
         else {
             log::info!("Title: {}", event_data.title);
@@ -148,10 +156,10 @@ impl Inspect for EplusInspector {
             }
         }
 
-        let content_type = if playlist_url.contains("stream.live.eplus.jp") {
-            ContentType::Live
-        } else {
+        let content_type = if EplusClient::is_archive_playlist(&playlist_url) {
             ContentType::Archive
+        } else {
+            ContentType::Live
         };
 
         Ok(InspectResult::Playlist(InspectPlaylist {
@@ -172,95 +180,214 @@ impl Inspect for EplusInspector {
 #[cfg(test)]
 mod tests {
     use super::{ALLOW_PREPARING, EplusInspector};
-    use shiori_plugin::{Inspect, InspectResult, InspectorArguments, ShioriContext};
+    use shiori_plugin::{ContentType, Inspect, InspectResult, InspectorArguments, ShioriContext};
+    use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    struct AnonymousArguments;
+    const PLAYLIST: &str = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n";
 
-    impl InspectorArguments for AnonymousArguments {
+    struct Arguments {
+        archive_only: bool,
+    }
+
+    impl InspectorArguments for Arguments {
         fn get_string(&self, _: &'static str) -> Option<String> {
             None
         }
 
-        fn get_boolean(&self, _: &'static str) -> bool {
-            false
+        fn get_boolean(&self, argument: &'static str) -> bool {
+            argument == "eplus-archive" && self.archive_only
         }
     }
 
-    async fn inspect_event(status: &str) -> (InspectResult, usize) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let host = "stream.live.eplus.jp";
-        let playlist = format!("http://{host}:{}/prepared.m3u8", address.port());
-        let page = format!(
-            "<script>var app = {{\"appId\":\"fixture\",\"appName\":\"Fixture\",\"deliveryStatus\":\"{status}\"}};</script>\nvar listChannels = [\"{playlist}\"];"
-        );
-        let server = tokio::spawn(async move {
-            let mut playlist_requests = 0;
-            loop {
-                let accepted =
-                    tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept())
-                        .await;
-                let Ok(Ok((mut stream, _))) = accepted else {
-                    break;
-                };
-                let mut request = Vec::new();
-                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
-                    let mut buffer = [0; 1024];
-                    let length = stream.read(&mut buffer).await.unwrap();
-                    if length == 0 {
-                        break;
+    struct Fixture {
+        context: ShioriContext,
+        url: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl Fixture {
+        async fn start(status: &str, archive: Option<(u16, &'static str)>) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let live = format!("http://stream.live.eplus.jp:{}/live.m3u8", address.port());
+            let vod = format!("http://vod.live.eplus.jp:{}/archive.m3u8", address.port());
+            let channels = if archive.is_some() {
+                format!("[\"{live}\",\"{vod}\"]")
+            } else {
+                format!("[\"{live}\"]")
+            };
+            let page = format!(
+                "<script>var app = {{\"app_id\":\"fixture\",\"app_name\":\"Fixture\",\"delivery_status\":\"{status}\",\"archive_mode\":\"ON\"}};</script>\nvar listChannels = {channels};"
+            );
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let recorded_requests = requests.clone();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                        let mut buffer = [0; 1024];
+                        let length = stream.read(&mut buffer).await.unwrap();
+                        if length == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buffer[..length]);
                     }
-                    request.extend_from_slice(&buffer[..length]);
+                    let request = String::from_utf8(request).unwrap();
+                    let path = request.split_whitespace().nth(1).unwrap();
+                    recorded_requests.lock().unwrap().push(path.to_string());
+                    let (status, body) = match path {
+                        "/event" => (200, page.as_str()),
+                        "/live.m3u8" => (200, PLAYLIST),
+                        "/archive.m3u8" => archive.unwrap_or((404, "Not found")),
+                        _ => (404, "Not found"),
+                    };
+                    let reason = if status == 200 { "OK" } else { "Not Found" };
+                    let response = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
                 }
-                let event = request.starts_with(b"GET /event ");
-                if !event {
-                    playlist_requests += 1;
-                }
-                let body = if event {
-                    page.as_str()
-                } else {
-                    "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n"
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+            let context = ShioriContext::new(shiori_plugin::iori::IoriHttp::new(move || {
+                reqwest::Client::builder()
+                    .no_proxy()
+                    .resolve("stream.live.eplus.jp", address)
+                    .resolve("vod.live.eplus.jp", address)
+            }));
+            Self {
+                context,
+                url: format!("http://{address}/event"),
+                requests,
+                server,
             }
-            playlist_requests
-        });
-        let context = ShioriContext::new(shiori_plugin::iori::IoriHttp::new(move || {
-            reqwest::Client::builder().no_proxy().resolve(host, address)
-        }));
-        let url = format!("http://{address}/event");
-        let regex = shiori_plugin::Regex::new(".*").unwrap();
-        let captures = regex.captures(&url).unwrap();
-        let result = EplusInspector
-            .inspect(&context, &url, &captures, &AnonymousArguments)
-            .await
-            .unwrap();
-        (result, server.await.unwrap())
+        }
+
+        async fn inspect(&self, archive_only: bool) -> InspectResult {
+            let regex = shiori_plugin::Regex::new(".*").unwrap();
+            let captures = regex.captures(&self.url).unwrap();
+            EplusInspector
+                .inspect(
+                    &self.context,
+                    &self.url,
+                    &captures,
+                    &Arguments { archive_only },
+                )
+                .await
+                .unwrap()
+        }
+
+        fn requests_to(&self, path: &str) -> usize {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| *request == path)
+                .count()
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    fn assert_playlist(result: InspectResult, content_type: ContentType, path: &str) {
+        let InspectResult::Playlist(playlist) = result else {
+            panic!("Expected a playable playlist");
+        };
+        assert!(playlist.playlist_url.ends_with(path));
+        assert_eq!(playlist.source.unwrap().content_type, content_type);
     }
 
     #[tokio::test]
     async fn preparing_event_only_probes_playlist_in_local_build() {
-        let (result, requests) = inspect_event("PREPARING").await;
+        let fixture = Fixture::start("PREPARING", None).await;
+        let result = fixture.inspect(false).await;
         if ALLOW_PREPARING {
-            assert!(matches!(result, InspectResult::Playlist(_)));
-            assert_eq!(requests, 1);
+            assert_playlist(result, ContentType::Live, "/live.m3u8");
+            assert_eq!(fixture.requests_to("/live.m3u8"), 1);
         } else {
             assert!(matches!(result, InspectResult::None));
-            assert_eq!(requests, 0);
+            assert_eq!(fixture.requests_to("/live.m3u8"), 0);
         }
     }
 
     #[tokio::test]
-    async fn started_and_archived_events_still_probe_the_playlist() {
-        for status in ["STARTED", "CONFIRMED_ARCHIVE"] {
-            let (result, requests) = inspect_event(status).await;
-            assert!(matches!(result, InspectResult::Playlist(_)), "{status}");
-            assert_eq!(requests, 1, "{status}");
+    async fn live_events_keep_the_live_playlist() {
+        let fixture = Fixture::start("STARTED", Some((200, PLAYLIST))).await;
+        assert_playlist(
+            fixture.inspect(false).await,
+            ContentType::Live,
+            "/live.m3u8",
+        );
+        assert_eq!(fixture.requests_to("/archive.m3u8"), 0);
+    }
+
+    #[tokio::test]
+    async fn ended_events_wait_for_archive_publication() {
+        for status in ["STOPPED", "WAIT_CONFIRM_ARCHIVED"] {
+            let fixture = Fixture::start(status, Some((200, PLAYLIST))).await;
+            for archive_only in [false, true] {
+                assert!(matches!(
+                    fixture.inspect(archive_only).await,
+                    InspectResult::None
+                ));
+            }
+            assert_eq!(fixture.requests_to("/live.m3u8"), 0, "{status}");
+            assert_eq!(fixture.requests_to("/archive.m3u8"), 0, "{status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn archived_events_select_vod_without_probing_old_live_streams() {
+        let fixture = Fixture::start("CONFIRMED_ARCHIVE", Some((200, PLAYLIST))).await;
+        assert_playlist(
+            fixture.inspect(false).await,
+            ContentType::Archive,
+            "/archive.m3u8",
+        );
+        assert_eq!(fixture.requests_to("/live.m3u8"), 0);
+    }
+
+    #[tokio::test]
+    async fn unavailable_archives_do_not_fall_back_to_old_live_streams() {
+        for response in [
+            None,
+            Some((404, "Not found")),
+            Some((200, "<html>Not ready</html>")),
+        ] {
+            let fixture = Fixture::start("CONFIRMED_ARCHIVE", response).await;
+            assert!(matches!(fixture.inspect(false).await, InspectResult::None));
+            assert_eq!(fixture.requests_to("/live.m3u8"), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_option_selects_vod_even_while_live_is_available() {
+        let fixture = Fixture::start("STARTED", Some((200, PLAYLIST))).await;
+        assert_playlist(
+            fixture.inspect(true).await,
+            ContentType::Archive,
+            "/archive.m3u8",
+        );
+        assert_eq!(fixture.requests_to("/live.m3u8"), 0);
+    }
+
+    #[tokio::test]
+    async fn archive_option_waits_instead_of_downloading_live() {
+        for response in [
+            None,
+            Some((404, "Not found")),
+            Some((200, "<html>Not ready</html>")),
+        ] {
+            let fixture = Fixture::start("STARTED", response).await;
+            assert!(matches!(fixture.inspect(true).await, InspectResult::None));
+            assert_eq!(fixture.requests_to("/live.m3u8"), 0);
         }
     }
 }

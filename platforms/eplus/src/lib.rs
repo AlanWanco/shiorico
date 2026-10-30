@@ -322,6 +322,12 @@ impl EplusClient {
             .collect()
     }
 
+    pub fn is_archive_playlist(playlist_url: &str) -> bool {
+        reqwest::Url::parse(playlist_url)
+            .ok()
+            .is_some_and(|url| url.host_str() == Some("vod.live.eplus.jp"))
+    }
+
     /// Given a list of m3u8 URLs from event data, categorize them and rank candidates.
     pub fn candidate_playlists(m3u8_urls: &[String], prefer_archive: bool) -> Vec<String> {
         let common_id_re = Regex::new(r"/out/v1/([0-9a-fA-F]{32})/").unwrap();
@@ -364,13 +370,31 @@ impl EplusClient {
     pub async fn select_best_playlist(
         &self,
         m3u8_urls: &[String],
-        prefer_archive: bool,
+        archive_only: bool,
     ) -> Option<String> {
-        for playlist_url in Self::candidate_playlists(m3u8_urls, prefer_archive) {
+        let candidates = if archive_only {
+            m3u8_urls
+                .iter()
+                .filter(|url| Self::is_archive_playlist(url))
+                .cloned()
+                .collect()
+        } else {
+            Self::candidate_playlists(m3u8_urls, false)
+        };
+        for playlist_url in candidates {
             match self.client.get(&playlist_url).send().await {
                 Ok(resp) if resp.status().is_success() => match resp.bytes().await {
                     Ok(body) => {
-                        if iori_hls::parse_playlist_res(&body).is_ok() {
+                        let playable = match iori_hls::parse_playlist_res(&body) {
+                            Ok(iori_hls::Playlist::MasterPlaylist(playlist)) => {
+                                !archive_only || !playlist.variants.is_empty()
+                            }
+                            Ok(iori_hls::Playlist::MediaPlaylist(playlist)) => {
+                                !archive_only || !playlist.segments.is_empty()
+                            }
+                            Err(_) => false,
+                        };
+                        if playable {
                             return Some(playlist_url);
                         }
 

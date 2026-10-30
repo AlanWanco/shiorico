@@ -215,6 +215,7 @@ where
                         )?
                         .with_initial_segment_limit(self.download.initial_segments)
                         .with_idle_timeout(live_idle_timeout)
+                        .with_manifest_retry_interval(self.wait.then_some(wait_interval))
                         .with_refresh_interval(eplus_refresh_interval);
                         downloader.download(source).await?;
                     } else {
