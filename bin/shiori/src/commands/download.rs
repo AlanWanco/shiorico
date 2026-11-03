@@ -153,6 +153,7 @@ where
             .app(app)
             .concurrency(self.download.concurrency)
             .retries(self.download.segment_retries)
+            .dual_cursor(self.download.dual_cursor)
             .cache(self.cache.into_cache()?)
             .merger(
                 self.output
@@ -391,6 +392,10 @@ pub struct DownloadOptions {
 
     #[clap(long = "no-live-idle-timeout")]
     pub disable_live_idle_timeout: bool,
+
+    #[clap(long)]
+    #[clap(about_ll = "download-dual-cursor")]
+    pub dual_cursor: bool,
 }
 
 impl Default for DownloadOptions {
@@ -402,6 +407,7 @@ impl Default for DownloadOptions {
             initial_segments: None,
             live_idle_timeout: None,
             disable_live_idle_timeout: false,
+            dual_cursor: false,
         }
     }
 }

@@ -20,6 +20,7 @@ pub struct TestSegment {
     pub delay: Option<Duration>,
     pub concurrent_counter: Arc<AtomicU32>,
     pub max_concurrent: Arc<AtomicU32>,
+    pub order_log: Option<Arc<std::sync::Mutex<Vec<u64>>>>,
 }
 
 impl TestSegment {
@@ -34,6 +35,7 @@ impl TestSegment {
             delay: None,
             concurrent_counter: Arc::new(AtomicU32::new(0)),
             max_concurrent: Arc::new(AtomicU32::new(0)),
+            order_log: None,
         }
     }
 
@@ -63,10 +65,19 @@ impl TestSegment {
         self
     }
 
+    pub fn with_order_log(mut self, order_log: Arc<std::sync::Mutex<Vec<u64>>>) -> Self {
+        self.order_log = Some(order_log);
+        self
+    }
+
     async fn write_data<W>(&self, writer: &mut W) -> IoriResult<()>
     where
         W: tokio::io::AsyncWrite + Unpin + Send,
     {
+        if let Some(order_log) = &self.order_log {
+            order_log.lock().unwrap().push(self.sequence);
+        }
+
         let current = self.concurrent_counter.fetch_add(1, Ordering::SeqCst) + 1;
         loop {
             let max = self.max_concurrent.load(Ordering::SeqCst);

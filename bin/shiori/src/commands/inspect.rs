@@ -198,12 +198,21 @@ impl InspectorOptions {
 
 impl InspectorArguments for InspectorOptions {
     fn get_string(&self, argument: &'static str) -> Option<String> {
-        self.arg_matches.get_one::<String>(argument).cloned()
+        // Plugins query arguments that only the other mode registers, e.g. the
+        // Sheeta inspector always asks for `shiori-inspect-mode`. Lookups must
+        // not panic when the argument is absent.
+        self.arg_matches
+            .try_get_one::<String>(argument)
+            .ok()
+            .flatten()
+            .cloned()
     }
 
     fn get_boolean(&self, argument: &'static str) -> bool {
         self.arg_matches
-            .get_one::<bool>(argument)
+            .try_get_one::<bool>(argument)
+            .ok()
+            .flatten()
             .copied()
             .unwrap_or(false)
     }
@@ -244,6 +253,14 @@ mod tests {
         let arguments = InspectModeArguments { inner: &inner };
 
         assert!(arguments.get_boolean("shiori-inspect-mode"));
+    }
+
+    #[test]
+    fn unregistered_arguments_are_tolerated() {
+        let arguments = InspectorOptions::default();
+
+        assert!(!arguments.get_boolean("shiori-inspect-mode"));
+        assert_eq!(arguments.get_string("eplus-username"), None);
     }
 }
 

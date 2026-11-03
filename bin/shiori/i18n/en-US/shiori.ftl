@@ -33,6 +33,14 @@ download-live-idle-timeout =
     disabled unless this option is explicitly set.
 
 download-no-live-idle-timeout = Disable live idle timeout auto-stop behavior.
+download-dual-cursor =
+    Run a backfill cursor and a live-edge cursor at the same time.
+
+    The backfill cursor walks the initial playlist window in chronological order while the
+    live-edge cursor fetches segments published afterwards, so a slow backfill cannot let the
+    CDN window roll them out. The output stays a single file written in chronological order.
+
+    Off by default; without it segments are downloaded in the original single-cursor order
 
 download-cache-in-menory-cache = Use in-memory cache and do not write cache to disk while downloading
 download-cache-temp-dir =

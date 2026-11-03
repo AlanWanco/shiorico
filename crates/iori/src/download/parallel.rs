@@ -11,6 +11,8 @@ use std::marker::PhantomData;
 use std::{num::NonZeroU32, sync::Arc};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Semaphore, oneshot};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
 async fn wait_for_stop_signal() {
@@ -144,6 +146,7 @@ pub struct ParallelDownloader<S = (), M = (), C = (), A = ()> {
     source: Arc<S>,
     concurrency: NonZeroU32,
     permits: Arc<Semaphore>,
+    dual_cursor: bool,
 
     app: Arc<A>,
 
@@ -189,6 +192,26 @@ where
         };
         self.app.on_start().await?;
 
+        // With `dual_cursor` two cursors share one chronological output: the
+        // backfill cursor walks the playlist from its oldest segment under
+        // `permits`, while the live-edge cursor fetches everything published
+        // after the initial window under its own `edge_permits`. The live-edge
+        // cursor therefore keeps the newest segments even when a slow backfill
+        // lets the playlist roll them out of the CDN window. Without the flag
+        // every batch draws from `permits`, i.e. the original single-cursor
+        // order.
+        //
+        // Downloads run off the dispatch loop so the loop keeps reading the
+        // playlist while a batch is still being fetched. Reports return to
+        // dispatch order through a one-shot chain, so the merger only ever
+        // buffers the segment it is waiting for.
+        let cancel = CancellationToken::new();
+        let edge_permits = Arc::new(Semaphore::new(self.concurrency.get() as usize));
+        let mut tasks = JoinSet::new();
+        let mut previous_report: Option<oneshot::Receiver<()>> = None;
+        let mut live_edge = false;
+        let mut stopped = false;
+
         {
             let stream = tokio::select! {
                 result = self.source.segments_stream(&self.context) => Some(result?),
@@ -204,10 +227,15 @@ where
             let stream = stream.expect("stream was checked above");
             tokio::pin!(stream);
 
-            'download: loop {
+            loop {
+                while tasks.try_join_next().is_some() {
+                    // Reap finished downloads so a live stream cannot accumulate
+                    // completed join handles for the whole session.
+                }
                 let segments = tokio::select! {
                     biased;
                     _ = &mut self.stop_signal => {
+                        stopped = true;
                         tracing::info!("Stop signal received, finishing downloaded segments.");
                         break;
                     }
@@ -261,14 +289,60 @@ where
                     let merger = self.merger.clone();
                     let cache = self.cache.clone();
                     let retries = self.retries;
-                    let permit = tokio::select! {
-                        biased;
-                        _ = &mut self.stop_signal => {
-                            break 'download;
-                        }
-                        permit = self.permits.clone().acquire_owned() => permit.unwrap(),
+                    let dual_cursor = self.dual_cursor;
+                    let edge = dual_cursor && live_edge;
+                    // Without --dual-cursor the permit is reserved before
+                    // dispatching, so downloads start in playlist order exactly
+                    // like the original downloader. With the flag the loop must
+                    // never block on a permit: it has to keep reading the
+                    // playlist while the backfill drains.
+                    let reserved = if dual_cursor {
+                        None
+                    } else {
+                        Some(
+                            self.permits
+                                .clone()
+                                .acquire_owned()
+                                .await
+                                .expect("download semaphore is never closed"),
+                        )
                     };
-                    tokio::spawn(async move {
+                    let permits = if edge {
+                        edge_permits.clone()
+                    } else {
+                        self.permits.clone()
+                    };
+                    let task_cancel = cancel.clone();
+                    let (report_tx, report_rx) = oneshot::channel();
+                    let previous = previous_report.replace(report_rx);
+                    tasks.spawn(async move {
+                        let permit = match reserved {
+                            Some(permit) => permit,
+                            None => {
+                                let acquired = tokio::select! {
+                                    biased;
+                                    _ = task_cancel.cancelled() => None,
+                                    permit = permits.acquire_owned() => {
+                                        Some(permit.expect("download semaphore is never closed"))
+                                    }
+                                };
+                                match acquired {
+                                    Some(permit) => permit,
+                                    None => {
+                                        // Stopped before this group touched the
+                                        // network. Still take the report turn, so a
+                                        // later group can never report ahead of an
+                                        // earlier one whose download is still
+                                        // running.
+                                        if let Some(previous) = previous {
+                                            let _ = previous.await;
+                                        }
+                                        let _ = report_tx.send(());
+                                        return;
+                                    }
+                                }
+                            }
+                        };
                         let mut outcomes = Vec::with_capacity(group.len());
                         for segment in group {
                             outcomes.push(
@@ -276,8 +350,12 @@ where
                                     .await,
                             );
                         }
+                        drop(permit);
                         let group_failed = synchronized && outcomes.iter().any(|o| !o.succeeded);
 
+                        if let Some(previous) = previous {
+                            let _ = previous.await;
+                        }
                         for outcome in outcomes {
                             let filename = outcome.segment.file_name.clone();
                             if group_failed || !outcome.succeeded {
@@ -302,9 +380,32 @@ where
                                 }
                             }
                         }
-                        drop(permit);
+                        let _ = report_tx.send(());
                     });
                 }
+                live_edge = true;
+            }
+        }
+
+        if stopped {
+            // Groups that never started downloading are dropped here; the ones
+            // already in flight still finish and report.
+            cancel.cancel();
+        }
+        // A finished playlist (DVR, one-shot batch) leaves the dispatch loop
+        // right after queueing everything, so the drain below is the only place
+        // that can still observe Ctrl-C. Without this a long backfill cannot be
+        // interrupted at all.
+        let mut stop_observed = stopped;
+        while !tasks.is_empty() {
+            tokio::select! {
+                biased;
+                _ = &mut self.stop_signal, if !stop_observed => {
+                    stop_observed = true;
+                    tracing::info!("Stop signal received, dropping queued segments.");
+                    cancel.cancel();
+                }
+                _ = tasks.join_next() => {}
             }
         }
 
@@ -312,13 +413,6 @@ where
     }
 
     async fn finish(self) -> IoriResult<M::Result> {
-        // Wait for all in-flight downloads to finish before finalizing the merger.
-        let _ = self
-            .permits
-            .acquire_many(self.concurrency.get())
-            .await
-            .unwrap();
-
         self.app.on_finished().await?;
         self.merger.lock().await.finish(self.cache).await
     }
@@ -337,6 +431,7 @@ pub struct ParallelDownloaderBuilder<
 
     concurrency: NonZeroU32,
     retries: u32,
+    dual_cursor: bool,
     merger: Option<M>,
     cache: Option<C>,
     stop_signal: Option<oneshot::Receiver<()>>,
@@ -358,6 +453,7 @@ impl<M, C, MR, A, MergerSet, CacheSet, AppSet>
             context,
             concurrency: NonZeroU32::new(5).unwrap(),
             retries: 3,
+            dual_cursor: false,
             merger: None,
             cache: None,
             stop_signal: None,
@@ -374,6 +470,14 @@ impl<M, C, MR, A, MergerSet, CacheSet, AppSet>
 
     pub fn retries(mut self, retries: u32) -> Self {
         self.retries = retries;
+        self
+    }
+
+    /// Enables the live-edge cursor: segments published after the initial
+    /// playlist window are fetched immediately instead of queueing behind the
+    /// backfill. Off by default.
+    pub fn dual_cursor(mut self, dual_cursor: bool) -> Self {
+        self.dual_cursor = dual_cursor;
         self
     }
 
@@ -398,6 +502,7 @@ impl<M, C, MR, A, MergerSet, CacheSet, AppSet>
             context: self.context,
             concurrency: self.concurrency,
             retries: self.retries,
+            dual_cursor: self.dual_cursor,
             merger: Some(merger),
             cache: self.cache,
             stop_signal: self.stop_signal,
@@ -418,6 +523,7 @@ impl<M, C, MR, A, MergerSet, CacheSet, AppSet>
             context: self.context,
             concurrency: self.concurrency,
             retries: self.retries,
+            dual_cursor: self.dual_cursor,
             merger: self.merger,
             cache: Some(cache),
             stop_signal: self.stop_signal,
@@ -438,6 +544,7 @@ impl<M, C, MR, A, MergerSet, CacheSet, AppSet>
             context: self.context,
             concurrency: self.concurrency,
             retries: self.retries,
+            dual_cursor: self.dual_cursor,
             merger: self.merger,
             cache: self.cache,
             stop_signal: self.stop_signal,
@@ -473,6 +580,7 @@ where
             concurrency: self.concurrency,
             permits: Arc::new(Semaphore::new(self.concurrency.get() as usize)),
             retries: self.retries,
+            dual_cursor: self.dual_cursor,
             stop_signal: self.stop_signal.expect("Stop signal is not set"),
         }
     }

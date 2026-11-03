@@ -19,6 +19,8 @@ shiorico inspect 'https://example.com/playlist.m3u8'
 
 需要持续等待开播时加 `--wait`，用 `--wait-interval 60` 调整重试间隔。`--initial-segments 3` 只限制首次抓取直播列表的分片数量，用于减少启动延迟。`--no-recycle` 保留已下载分片。
 
+直播下载默认按播放列表顺序单游标下载。加 `--dual-cursor` 后同时运行两个游标：回溯游标按时间顺序补齐播放列表窗口里的旧分片，边缘游标立刻抓取新发布的分片。回溯较慢时新分片也不会因为滚出 CDN 窗口而丢失。输出仍是一个文件，按时间顺序写入。
+
 Eplus 活动结束且回放上线后会自动下载回放。加 `--wait` 可等待回放发布及播放列表就绪；只想下载回放时使用 `--eplus-archive`，它不会回退到直播流。回放始终从头下载，不受 `--initial-segments` 限制。
 
 ```bash

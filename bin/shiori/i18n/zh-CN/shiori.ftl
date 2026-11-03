@@ -32,6 +32,13 @@ download-live-idle-timeout =
     普通下载默认 30 秒；使用 --wait 时默认不启用此超时，除非显式设置该选项。
 
 download-no-live-idle-timeout = 禁用直播空闲超时自动停止行为。
+download-dual-cursor =
+    同时启用回溯游标和边缘游标（双游标）。
+
+    回溯游标按时间顺序补齐首次播放列表窗口中的旧分片，边缘游标立即抓取之后新发布的分片，
+    避免回溯较慢时新分片被挤出 CDN 窗口。输出仍是单个文件，按时间顺序写入。
+
+    默认关闭，使用原有的单游标顺序下载
 
 download-cache-in-menory-cache = 使用内存缓存，下载时不将缓存写入磁盘
 download-cache-temp-dir =

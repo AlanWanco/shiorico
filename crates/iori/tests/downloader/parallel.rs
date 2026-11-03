@@ -283,6 +283,7 @@ async fn test_parallel_downloader_stop_signal() -> anyhow::Result<()> {
             .app(TracingApp::default())
             .merger(SkipMerger)
             .cache(cache.clone())
+            .dual_cursor(true)
             .stop_signal(rx)
             .download(source)
             .await
@@ -293,6 +294,53 @@ async fn test_parallel_downloader_stop_signal() -> anyhow::Result<()> {
 
     let res = downloader_handle.await?;
     assert!(res.is_ok());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parallel_downloader_stop_signal_during_drain() -> anyhow::Result<()> {
+    // A finished playlist (DVR, one-shot batch) queues everything and ends the
+    // source right away, so the stop signal has to be honored while the queued
+    // groups are drained.
+    let segments = (0..40)
+        .map(|i| {
+            TestSegment::new(1, i, format!("test{}.ts", i)).with_delay(Duration::from_millis(300))
+        })
+        .collect::<Vec<_>>();
+
+    let cache = Arc::new(MemoryCacheSource::new());
+    let (tx, rx) = oneshot::channel();
+
+    let handle = tokio::spawn({
+        let cache = cache.clone();
+        async move {
+            ParallelDownloader::builder(Default::default())
+                .app(TracingApp::default())
+                .merger(SkipMerger)
+                .cache(cache)
+                .concurrency(NonZeroU32::new(2).unwrap())
+                .dual_cursor(true)
+                .stop_signal(rx)
+                .download(TestSource::new(segments))
+                .await
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    tx.send(()).unwrap();
+
+    let stopping = std::time::Instant::now();
+    let res = tokio::time::timeout(Duration::from_secs(2), handle).await??;
+    assert!(res.is_ok());
+    assert!(
+        stopping.elapsed() < Duration::from_secs(1),
+        "draining took {:?}",
+        stopping.elapsed()
+    );
+
+    let result = cache.into_inner();
+    assert!(result.lock().unwrap().len() < 40);
 
     Ok(())
 }
@@ -338,6 +386,87 @@ async fn test_parallel_downloader_live_simulation() -> anyhow::Result<()> {
     assert_eq!(result.len(), 2);
     assert!(result.contains_key(&(0, 1)));
     assert!(result.contains_key(&(1, 1)));
+
+    Ok(())
+}
+
+// The live-edge cursor keeps fetching segments published after the first
+// playlist batch while the backfill is still draining, so a slow backfill
+// cannot lose the newest segments when the playlist rolls them out.
+#[tokio::test]
+async fn live_edge_segment_is_fetched_while_backfill_drains() -> anyhow::Result<()> {
+    let order_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let backfill = (0..5)
+        .map(|i| {
+            TestSegment::new(1, i, format!("test{i}.ts"))
+                .with_delay(Duration::from_millis(50))
+                .with_order_log(order_log.clone())
+        })
+        .collect::<Vec<_>>();
+    let live_edge =
+        vec![TestSegment::new(1, 5, "test5.ts".to_string()).with_order_log(order_log.clone())];
+
+    let source = TestSource::new_with_batches(vec![backfill, live_edge]);
+    let cache = Arc::new(MemoryCacheSource::new());
+
+    ParallelDownloader::builder(Default::default())
+        .app(TracingApp::default())
+        .merger(SkipMerger)
+        .cache(cache)
+        .concurrency(NonZeroU32::new(1).unwrap())
+        .dual_cursor(true)
+        .ctrlc_handler()
+        .download(source)
+        .await?;
+
+    let order = order_log.lock().unwrap().clone();
+    assert_eq!(order.len(), 6, "every segment should be fetched: {order:?}");
+    let edge_position = order
+        .iter()
+        .position(|&sequence| sequence == 5)
+        .expect("the live-edge segment should be fetched");
+    assert!(
+        edge_position < order.len() - 1,
+        "live-edge segment waited for the whole backfill: {order:?}"
+    );
+
+    Ok(())
+}
+
+// The live-edge cursor is opt-in: by default segments published after the
+// initial window queue behind the backfill and are fetched in order.
+#[tokio::test]
+async fn dual_cursor_is_opt_in() -> anyhow::Result<()> {
+    let order_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let backfill = (0..5)
+        .map(|i| {
+            TestSegment::new(1, i, format!("test{i}.ts"))
+                .with_delay(Duration::from_millis(100))
+                .with_order_log(order_log.clone())
+        })
+        .collect::<Vec<_>>();
+    let live_edge =
+        vec![TestSegment::new(1, 5, "test5.ts".to_string()).with_order_log(order_log.clone())];
+
+    // The live segment is published while the backfill is still draining.
+    let source = DelayedBatchSource::new(vec![backfill, live_edge], Duration::from_millis(50));
+    let cache = Arc::new(MemoryCacheSource::new());
+
+    ParallelDownloader::builder(Default::default())
+        .app(TracingApp::default())
+        .merger(SkipMerger)
+        .cache(cache)
+        .concurrency(NonZeroU32::new(1).unwrap())
+        .ctrlc_handler()
+        .download(source)
+        .await?;
+
+    let order = order_log.lock().unwrap().clone();
+    assert_eq!(
+        order,
+        vec![0, 1, 2, 3, 4, 5],
+        "the live segment should wait for the backfill without --dual-cursor"
+    );
 
     Ok(())
 }
