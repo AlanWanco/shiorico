@@ -17,6 +17,8 @@ shiorico download 'https://example.com/playlist.m3u8' -o recording.mkv
 shiorico inspect 'https://example.com/playlist.m3u8'
 ```
 
+下载请求可用 `-H 'User-Agent: CustomPlayer/1.0' -H 'Referer: https://example.com/program'` 指定请求头。显式 User-Agent 优先于内置默认值，适用于播放列表和分片请求；未指定时继续使用默认 UA。
+
 需要持续等待开播时加 `--wait`，用 `--wait-interval 60` 调整重试间隔。`--initial-segments 3` 只限制首次抓取直播列表的分片数量，用于减少启动延迟。`--no-recycle` 保留已下载分片。
 
 直播下载默认按播放列表顺序单游标下载。加 `--dual-cursor` 后同时运行两个游标：回溯游标按时间顺序补齐播放列表窗口里的旧分片，边缘游标立刻抓取新发布的分片。回溯较慢时新分片也不会因为滚出 CDN 窗口而丢失。输出仍是一个文件，按时间顺序写入。

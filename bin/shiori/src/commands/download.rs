@@ -25,7 +25,7 @@ use iori::{
 };
 use reqwest::{
     Client, IntoUrl,
-    header::{HeaderMap, HeaderName, HeaderValue},
+    header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT},
 };
 use shiori_plugin::{ContentType, InspectorArguments, PlaylistType, ShioriContext};
 use std::{
@@ -339,10 +339,12 @@ impl HttpOptions {
         let client = IoriHttp::new(move || {
             let mut builder = Client::builder()
                 .default_headers(headers.clone())
-                .user_agent(get_chrome_rua())
                 .connection_verbose(true)
                 .timeout(Duration::from_secs(self.timeout))
                 .danger_accept_invalid_certs(true);
+            if !headers.contains_key(USER_AGENT) {
+                builder = builder.user_agent(get_chrome_rua());
+            }
             if self.http1_only {
                 builder = builder.http1_only().http1_title_case_headers();
             }
@@ -708,6 +710,64 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn explicit_user_agent_and_referer_reach_http_server() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/playlist.m3u8", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.ends_with(b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..count]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let http = HttpOptions {
+            headers: vec![
+                "uSeR-aGeNt: CustomPlayer/1.0".to_string(),
+                "Referer: https://fixture.example/program".to_string(),
+            ],
+            timeout: 5,
+            ..Default::default()
+        }
+        .into_client(&url);
+        http.client()
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let request = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        let headers: HeaderMap = request
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| {
+                (
+                    HeaderName::from_str(name).unwrap(),
+                    HeaderValue::from_str(value.trim()).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(headers[USER_AGENT], "CustomPlayer/1.0");
+        assert_eq!(
+            headers[reqwest::header::REFERER],
+            "https://fixture.example/program"
+        );
+    }
 
     #[test]
     fn inspect_title_becomes_a_sanitized_default_output_name() {
