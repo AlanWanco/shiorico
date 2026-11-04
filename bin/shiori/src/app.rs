@@ -250,7 +250,7 @@ where
             SetAttribute(Attribute::Bold),
             Print("╭─ "),
             SetForegroundColor(CColor::Cyan),
-            Print("Shiori Downloader "),
+            Print("shiorico "),
             SetForegroundColor(CColor::Blue),
             Print("─"),
             SetAttribute(Attribute::Reset),
