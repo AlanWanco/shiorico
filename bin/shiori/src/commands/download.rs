@@ -125,6 +125,7 @@ where
             shaka_packager_command: self.decrypt.shaka_packager_command.clone().into(),
             manifest_retries: self.download.manifest_retries,
             segment_retries: self.download.segment_retries,
+            probe_backfill: false,
         };
 
         let pipe_buffer_segments = if self.extra.platform.as_deref() == Some("niconico") {
@@ -164,6 +165,13 @@ where
                 self.extra.premium,
                 self.inspector_options.get_boolean("nico-chase-play"),
             )?
+        };
+
+        // Probing older segments only makes sense together with the backfill
+        // cursor, which is what --dual-cursor turns on.
+        let context = IoriContext {
+            probe_backfill: dual_cursor,
+            ..context
         };
 
         let downloader = ParallelDownloader::builder(context)

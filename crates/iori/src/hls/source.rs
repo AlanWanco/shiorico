@@ -22,6 +22,10 @@ use super::utils::load_playlist_with_retry;
 
 const KEY_RECOVERY_DELAY: Duration = Duration::from_millis(500);
 
+/// Upper bound of synthesized segments when probing before the playlist
+/// window; beyond this the request fan-out is not worth it.
+const MAX_BACKFILL_PROBES: u64 = 3600;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SegmentIdentity {
     url: Url,
@@ -61,6 +65,9 @@ pub struct HlsMediaPlaylistSource {
     initial_playlist: Option<MediaPlaylist>,
     previous_playlist_segments: HashSet<SegmentIdentity>,
     cached_key: Option<(HlsKeyIdentity, Option<Arc<IoriKey>>)>,
+    /// Set once a playlist was processed; older segments are only probed for
+    /// the first window, never again after a URL rotation.
+    probed: bool,
 }
 
 /// A source to fetch segments from a Media Playlist
@@ -91,6 +98,7 @@ impl HlsMediaPlaylistSource {
             stream_id,
             previous_playlist_segments: HashSet::new(),
             cached_key: None,
+            probed: false,
         }
     }
 
@@ -230,6 +238,7 @@ impl HlsMediaPlaylistSource {
             _ => *latest_media_sequence,
         };
 
+        let sequence_base = self.sequence.load(Ordering::Relaxed);
         let mut key = None;
         let mut initial_segment = InitialSegment::None;
         let mut next_range_start = 0;
@@ -341,6 +350,7 @@ impl HlsMediaPlaylistSource {
                 duration: *segment.duration,
                 stream_type: self.stream_type,
                 format,
+                is_probe: false,
             };
             segments.push(m3u8_segment);
 
@@ -355,11 +365,115 @@ impl HlsMediaPlaylistSource {
             }
         }
 
+        if !self.probed {
+            self.probed = true;
+            let mut probes = self.backfill_probes(context, &segments, &playlist);
+            if !probes.is_empty() {
+                for (index, probe) in probes.iter_mut().enumerate() {
+                    probe.sequence = sequence_base + index as u64;
+                }
+                let probe_count = probes.len() as u64;
+                let mut merged = probes;
+                for (index, mut segment) in segments.drain(..).enumerate() {
+                    segment.sequence = sequence_base + probe_count + index as u64;
+                    merged.push(segment);
+                }
+                self.sequence
+                    .store(sequence_base + merged.len() as u64, Ordering::Relaxed);
+                segments = merged;
+            }
+        }
+
         if !current_playlist_segments.is_empty() {
             self.previous_playlist_segments = current_playlist_segments;
         }
 
         Ok((segments, playlist_url, playlist))
+    }
+
+    /// Synthesize segments for the part of the stream that started before the
+    /// current playlist window.
+    ///
+    /// Live playlists only list their current window. When the CDN names
+    /// segments after the media sequence (`..._00042.ts`), the names of the
+    /// older segments can be rebuilt, so the backfill cursor can try to fetch
+    /// what it missed. Missing ones fail and are skipped by the merger.
+    fn backfill_probes(
+        &self,
+        context: &IoriContext,
+        window: &[M3u8Segment],
+        playlist: &MediaPlaylist,
+    ) -> Vec<M3u8Segment> {
+        if !context.probe_backfill || playlist.end_list {
+            return Vec::new();
+        }
+        let Some(first) = window.first() else {
+            return Vec::new();
+        };
+        if first.media_sequence == 0 || first.byte_range.is_some() || first.part_index != 0 {
+            return Vec::new();
+        }
+        // Only formats the merger can concatenate with holes are worth probing;
+        // fMP4 would drop the entire stream when one probe is missing.
+        if !matches!(first.format, SegmentFormat::Mpeg2TS | SegmentFormat::Aac) {
+            return Vec::new();
+        }
+        let Some((prefix, number, width, suffix)) = split_trailing_number(&first.filename) else {
+            return Vec::new();
+        };
+        if number != first.media_sequence {
+            tracing::debug!(
+                "Segment names do not follow the media sequence; not probing older segments."
+            );
+            return Vec::new();
+        }
+        if first.media_sequence > MAX_BACKFILL_PROBES {
+            tracing::warn!(
+                "Playlist starts at media sequence {}; refusing to probe more than {MAX_BACKFILL_PROBES} older segments.",
+                first.media_sequence
+            );
+            return Vec::new();
+        }
+
+        let mut probes = Vec::with_capacity(first.media_sequence as usize);
+        for media_sequence in 0..first.media_sequence {
+            let filename = format!("{prefix}{media_sequence:0width$}{suffix}");
+            let mut url = first.url.clone();
+            match url.path_segments_mut() {
+                Ok(mut segments) => {
+                    segments.pop();
+                    segments.push(&filename);
+                }
+                Err(()) => return Vec::new(),
+            }
+            let key = first.key.as_ref().map(|key| {
+                key.with_media_sequence(media_sequence)
+                    .map(Arc::new)
+                    .unwrap_or_else(|| key.clone())
+            });
+
+            probes.push(M3u8Segment {
+                url,
+                filename: filename.clone(),
+                key,
+                initial_segment: first.initial_segment.clone(),
+                byte_range: None,
+                stream_id: first.stream_id,
+                stream_type: first.stream_type,
+                sequence: 0,
+                media_sequence,
+                part_index: 0,
+                duration: first.duration,
+                format: SegmentFormat::from_filename(&filename),
+                is_probe: true,
+            });
+        }
+
+        tracing::info!(
+            "Playlist starts at media sequence {}; probing older segments before the window.",
+            first.media_sequence
+        );
+        probes
     }
 
     async fn load_bytes(
@@ -607,4 +721,25 @@ impl HlsPlaylistSource {
             stream.sequence.store(val, Ordering::Relaxed);
         }
     }
+}
+
+/// Split a segment file name into its prefix, trailing number, zero-padding
+/// width and suffix.
+///
+/// `"show_0_720p_00042.ts"` becomes `("show_0_720p_", 42, 5, ".ts")`.
+fn split_trailing_number(filename: &str) -> Option<(&str, u64, usize, &str)> {
+    let digits_end = filename.rfind('.').unwrap_or(filename.len());
+    let digits_start = filename[..digits_end]
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map_or(0, |index| index + 1);
+    if digits_start == digits_end {
+        return None;
+    }
+    let number = filename[digits_start..digits_end].parse().ok()?;
+    Some((
+        &filename[..digits_start],
+        number,
+        digits_end - digits_start,
+        &filename[digits_end..],
+    ))
 }

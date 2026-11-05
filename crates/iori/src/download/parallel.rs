@@ -51,6 +51,7 @@ impl Drop for OutputStopGuard {
 struct SegmentDownloadOutcome {
     segment: SegmentInfo,
     succeeded: bool,
+    probe: bool,
 }
 
 async fn download_segment<S, C>(
@@ -64,14 +65,18 @@ where
     C: CacheSource + Send + Sync + 'static,
 {
     let segment_info = SegmentInfo::from(&segment);
+    let is_probe = segment.is_probe();
     let filename = segment_info.file_name.clone();
-    let mut retries = retries;
+    // Speculative probes are expected to 404; a single attempt keeps the
+    // failure path from flooding the CDN and the log.
+    let mut retries = if is_probe { 1 } else { retries };
 
     loop {
         if retries == 0 {
             return SegmentDownloadOutcome {
                 segment: segment_info,
                 succeeded: false,
+                probe: is_probe,
             };
         }
 
@@ -80,13 +85,18 @@ where
             return SegmentDownloadOutcome {
                 segment: segment_info,
                 succeeded: true,
+                probe: is_probe,
             };
         };
 
         let mut writer = match writer {
             Ok(writer) => writer,
             Err(e) => {
-                tracing::warn!("Failed to open writer for {filename}: {e}. Retrying later.");
+                if is_probe {
+                    tracing::debug!("Probe {filename} is unavailable, skipping. {e}");
+                } else {
+                    tracing::warn!("Failed to open writer for {filename}: {e}. Retrying later.");
+                }
                 retries -= 1;
                 continue;
             }
@@ -106,12 +116,17 @@ where
                 return SegmentDownloadOutcome {
                     segment: segment_info,
                     succeeded: true,
+                    probe: is_probe,
                 };
             }
             Err(e) => {
                 // Invalidate the cache on failure.
                 _ = cache.invalidate(&segment_info).await;
-                tracing::warn!("Processing {filename} failed, retry later. {e}");
+                if is_probe {
+                    tracing::debug!("Probe {filename} is unavailable, skipping. {e}");
+                } else {
+                    tracing::warn!("Processing {filename} failed, retry later. {e}");
+                }
                 retries -= 1;
             }
         }
@@ -359,7 +374,11 @@ where
                         for outcome in outcomes {
                             let filename = outcome.segment.file_name.clone();
                             if group_failed || !outcome.succeeded {
-                                app.on_failed_segment(&outcome.segment).await;
+                                // A missing probe is expected; the merger still
+                                // skips it, but the UI and logs stay quiet.
+                                if !outcome.probe {
+                                    app.on_failed_segment(&outcome.segment).await;
+                                }
                                 if let Err(e) = merger
                                     .lock()
                                     .await

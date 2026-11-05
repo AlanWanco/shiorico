@@ -106,6 +106,14 @@ pub trait StreamingSegment {
 
     /// Format hint for the segment
     fn format(&self) -> SegmentFormat;
+
+    /// Whether the segment only speculatively tries content outside the playlist.
+    ///
+    /// Probes are expected to be missing. Downloaders avoid retrying them and
+    /// keep their failures quiet.
+    fn is_probe(&self) -> bool {
+        false
+    }
 }
 
 pub trait WriteSegment {

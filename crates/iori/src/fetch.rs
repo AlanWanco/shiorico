@@ -24,6 +24,7 @@ where
     ) -> impl Future<Output = IoriResult<bytes::Bytes>> + Send {
         let url = self.url();
         let byte_range = self.byte_range();
+        let is_probe = self.is_probe();
         let headers = self.headers();
         async move {
             let mut request = context.client.get(url);
@@ -36,7 +37,10 @@ where
             let response = request.send().await?;
             if !response.status().is_success() {
                 let status = response.status();
-                if let Ok(body) = response.text().await {
+                let body = response.text().await.unwrap_or_default();
+                if is_probe {
+                    tracing::debug!("Probe segment is unavailable ({status}).");
+                } else {
                     tracing::warn!("Error body: {body}");
                 }
                 return Err(IoriError::HttpError(status));

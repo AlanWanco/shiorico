@@ -27,6 +27,9 @@ pub struct M3u8Segment {
 
     pub duration: f64,
     pub format: SegmentFormat,
+
+    /// Whether this segment only probes content outside the playlist window.
+    pub is_probe: bool,
 }
 
 impl StreamingSegment for M3u8Segment {
@@ -69,6 +72,10 @@ impl StreamingSegment for M3u8Segment {
     fn synchronization_key(&self) -> Option<(u64, u64)> {
         Some((self.part_index, self.media_sequence))
     }
+
+    fn is_probe(&self) -> bool {
+        self.is_probe
+    }
 }
 
 impl RemoteStreamingSegment for M3u8Segment {
@@ -78,5 +85,9 @@ impl RemoteStreamingSegment for M3u8Segment {
 
     fn byte_range(&self) -> Option<ByteRange> {
         self.byte_range.clone()
+    }
+
+    fn is_probe(&self) -> bool {
+        self.is_probe
     }
 }

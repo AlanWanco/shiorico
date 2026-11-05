@@ -138,6 +138,10 @@ impl StreamingSegment for Box<dyn StreamingSegment + Send + Sync + '_> {
     fn synchronization_key(&self) -> Option<(u64, u64)> {
         self.as_ref().synchronization_key()
     }
+
+    fn is_probe(&self) -> bool {
+        self.as_ref().is_probe()
+    }
 }
 
 impl StreamingSegment for &Box<dyn StreamingSegment + Send + Sync + '_> {
@@ -180,6 +184,10 @@ impl StreamingSegment for &Box<dyn StreamingSegment + Send + Sync + '_> {
     fn synchronization_key(&self) -> Option<(u64, u64)> {
         self.as_ref().synchronization_key()
     }
+
+    fn is_probe(&self) -> bool {
+        self.as_ref().is_probe()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -217,6 +225,13 @@ pub trait RemoteStreamingSegment {
 
     fn byte_range(&self) -> Option<ByteRange> {
         None
+    }
+
+    /// Whether the segment only speculatively tries content outside the playlist.
+    ///
+    /// Probes are expected to be missing; their failures stay out of the log.
+    fn is_probe(&self) -> bool {
+        false
     }
 }
 

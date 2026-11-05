@@ -40,6 +40,10 @@ download-dual-cursor =
     live-edge cursor fetches segments published afterwards, so a slow backfill cannot let the
     CDN window roll them out. The output stays a single file written in chronological order.
 
+    When a live playlist has already advanced past its first segment and the segment names
+    embed the media sequence, this also tries the older segments from sequence 0; ones the
+    CDN no longer serves are skipped. It needs no separate flag.
+
     Off by default; without it segments are downloaded in the original single-cursor order
 
 download-cache-in-menory-cache = Use in-memory cache and do not write cache to disk while downloading

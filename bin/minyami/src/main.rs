@@ -289,6 +289,7 @@ impl MinyamiArgs {
             shaka_packager_command: self.shaka_packager.clone().into(),
             manifest_retries: self.manifest_retries,
             segment_retries: self.retries,
+            probe_backfill: false,
         })
         .app(TracingApp::concurrent(self.threads))
         .cache(cache)
