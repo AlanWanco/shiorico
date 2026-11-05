@@ -219,6 +219,13 @@ pub struct InspectSource {
     /// The original URL that was inspected
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_url: Option<String>,
+
+    /// Whether the viewer's account has the premium entitlement the source
+    /// requires (e.g. Niconico Premium), as reported during inspect.
+    ///
+    /// `None` means the platform does not report entitlement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premium: Option<bool>,
 }
 
 impl InspectSource {
@@ -246,6 +253,12 @@ impl InspectSource {
     /// Set the original URL.
     pub fn with_original_url(mut self, url: impl Into<String>) -> Self {
         self.original_url = Some(url.into());
+        self
+    }
+
+    /// Set the viewer's premium entitlement.
+    pub fn with_premium(mut self, premium: bool) -> Self {
+        self.premium = Some(premium);
         self
     }
 }

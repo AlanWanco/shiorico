@@ -180,6 +180,24 @@ impl NicoEmbeddedData {
 
         Ok(channel_name.to_string())
     }
+
+    /// The viewer's account type reported by the watch page: `"premium"`,
+    /// `"free"`, or `"non"` for requests without a valid user session.
+    pub fn account_type(&self) -> Option<&str> {
+        self.data
+            .get("user")
+            .and_then(|user| user.get("accountType"))
+            .and_then(|account_type| account_type.as_str())
+    }
+
+    /// Whether the watch page reports a Niconico Premium account.
+    ///
+    /// Chase play is premium-only: the server rejects `chasePlay: true` from
+    /// free and anonymous sessions, so callers must check this before asking
+    /// for it.
+    pub fn is_premium(&self) -> bool {
+        self.account_type() == Some("premium")
+    }
 }
 
 pub struct NivoServerResponse {
@@ -376,6 +394,24 @@ mod tests {
     use crate::program::NivoServerResponse;
 
     use super::NicoEmbeddedData;
+    use serde_json::json;
+
+    fn embedded_data(props: serde_json::Value) -> NicoEmbeddedData {
+        NicoEmbeddedData {
+            client: reqwest::Client::new(),
+            data: props,
+        }
+    }
+
+    #[test]
+    fn account_type_identifies_premium_members() {
+        assert!(embedded_data(json!({"user": {"accountType": "premium"}})).is_premium());
+        assert!(!embedded_data(json!({"user": {"accountType": "free"}})).is_premium());
+        assert!(!embedded_data(json!({"user": {"accountType": "non"}})).is_premium());
+        let anonymous = embedded_data(json!({"user": {"isLoggedIn": false}}));
+        assert_eq!(anonymous.account_type(), None);
+        assert!(!anonymous.is_premium());
+    }
 
     #[tokio::test]
     async fn test_get_live_info() -> anyhow::Result<()> {

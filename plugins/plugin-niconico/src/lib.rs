@@ -119,6 +119,13 @@ impl Inspect for NicoLiveInspector {
             user_session.as_deref(),
         )
         .await?;
+        let premium = data.is_premium();
+        if chase_play && !premium {
+            anyhow::bail!(
+                "--nico-chase-play is only available to Niconico Premium members; \
+                 the given user session is not a premium account"
+            );
+        }
         let channel_id = data.channel_id()?;
         let program_id = data.program_id();
 
@@ -198,7 +205,8 @@ impl Inspect for NicoLiveInspector {
         let source = InspectSource::new("niconico", content_type)
             .with_channel_id(&channel_id)
             .with_content_id(&program_id)
-            .with_original_url(url);
+            .with_original_url(url)
+            .with_premium(premium);
 
         if !danmaku_only {
             result.push(InspectPlaylist {

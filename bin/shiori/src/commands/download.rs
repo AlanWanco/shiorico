@@ -149,11 +149,28 @@ where
                 })?,
         };
 
+        // Niconico only serves the sliding-window backfill that the dual cursor
+        // relies on to Premium accounts, and chase play already downloads from
+        // the start of the program, which makes the second cursor redundant.
+        let dual_cursor = if matches!(
+            playlist_type,
+            PlaylistType::RawData | PlaylistType::Http | PlaylistType::RawRemoteSegments(_)
+        ) {
+            self.download.dual_cursor
+        } else {
+            resolve_dual_cursor(
+                self.download.dual_cursor,
+                self.extra.platform.as_deref(),
+                self.extra.premium,
+                self.inspector_options.get_boolean("nico-chase-play"),
+            )?
+        };
+
         let downloader = ParallelDownloader::builder(context)
             .app(app)
             .concurrency(self.download.concurrency)
             .retries(self.download.segment_retries)
-            .dual_cursor(self.download.dual_cursor)
+            .dual_cursor(dual_cursor)
             .cache(self.cache.into_cache()?)
             .merger(
                 self.output
@@ -297,6 +314,35 @@ where
         self.extra = from.extra;
 
         self
+    }
+}
+
+/// Decide whether the dual-cursor download mode may run.
+///
+/// `--dual-cursor` and `--nico-chase-play` both depend on Niconico Premium
+/// entitlements, so the entitlement reported during inspect decides between
+/// running, ignoring, or rejecting the request.
+fn resolve_dual_cursor(
+    requested: bool,
+    platform: Option<&str>,
+    premium: Option<bool>,
+    chase_play: bool,
+) -> anyhow::Result<bool> {
+    if !requested || platform != Some("niconico") {
+        return Ok(requested);
+    }
+
+    match premium {
+        Some(true) if chase_play => {
+            log::warn!("--dual-cursor is ignored because --nico-chase-play is enabled.");
+            Ok(false)
+        }
+        Some(true) => Ok(true),
+        Some(false) => anyhow::bail!(
+            "--dual-cursor is only available to Niconico Premium members; \
+             the given user session is not a premium account"
+        ),
+        None => Ok(requested),
     }
 }
 
@@ -490,6 +536,8 @@ pub struct ExtraOptions {
     pub content_type: Option<ContentType>,
     /// Original URL from InspectSource, used for cookie refresh etc.
     pub original_url: Option<String>,
+    /// Premium entitlement reported by InspectSource (e.g. Niconico Premium).
+    pub premium: Option<bool>,
     pub streams_hint: Option<u32>,
 }
 
@@ -688,6 +736,7 @@ where
                 platform: data.source.as_ref().map(|s| s.platform.clone()),
                 content_type: data.source.as_ref().map(|s| s.content_type.clone()),
                 original_url: data.source.as_ref().and_then(|s| s.original_url.clone()),
+                premium: data.source.as_ref().and_then(|s| s.premium),
                 streams_hint: data.streams_hint,
             },
             output: OutputOptions {
@@ -710,6 +759,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shiori_plugin::InspectSource;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
@@ -784,5 +834,36 @@ mod tests {
         assert!(output_name.contains("ゲスト"));
         assert!(!output_name.contains('/'));
         assert!(!output_name.contains(':'));
+    }
+
+    #[test]
+    fn dual_cursor_is_gated_by_niconico_premium() {
+        assert!(!resolve_dual_cursor(false, Some("niconico"), Some(true), false).unwrap());
+        assert!(resolve_dual_cursor(true, Some("niconico"), Some(true), false).unwrap());
+        assert!(!resolve_dual_cursor(true, Some("niconico"), Some(true), true).unwrap());
+        assert!(resolve_dual_cursor(true, Some("niconico"), Some(false), false).is_err());
+        // Platforms that do not report entitlement stay on the previous behaviour.
+        assert!(resolve_dual_cursor(true, Some("eplus"), Some(false), false).unwrap());
+        assert!(resolve_dual_cursor(true, Some("niconico"), None, false).unwrap());
+    }
+
+    #[test]
+    fn inspect_source_premium_reaches_the_download_command() {
+        let command = DownloadCommand::<InspectorOptions>::from(InspectPlaylist {
+            playlist_url: "https://example.test/live.m3u8".to_string(),
+            playlist_type: PlaylistType::HLS,
+            source: Some(InspectSource::new("niconico", ContentType::Archive).with_premium(false)),
+            ..Default::default()
+        });
+
+        assert_eq!(command.extra.platform.as_deref(), Some("niconico"));
+        assert_eq!(command.extra.premium, Some(false));
+        let dual_cursor = resolve_dual_cursor(
+            true,
+            command.extra.platform.as_deref(),
+            command.extra.premium,
+            false,
+        );
+        assert!(dual_cursor.is_err());
     }
 }
