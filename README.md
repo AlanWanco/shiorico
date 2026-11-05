@@ -23,6 +23,8 @@ shiorico inspect 'https://example.com/playlist.m3u8'
 
 直播下载默认按播放列表顺序单游标下载。加 `--dual-cursor` 后同时运行两个游标：回溯游标按时间顺序补齐播放列表窗口里的旧分片，边缘游标立刻抓取新发布的分片。回溯较慢时新分片也不会因为滚出 CDN 窗口而丢失。输出仍是一个文件，按时间顺序写入。
 
+Niconico 直播的 `--dual-cursor` 和 `--nico-chase-play` 仅对 Premium 会员生效：会话不是 Premium 时会直接报错，两者同时开启时忽略 `--dual-cursor`。
+
 Eplus 活动结束且回放上线后会自动下载回放。加 `--wait` 可等待回放发布及播放列表就绪；只想下载回放时使用 `--eplus-archive`，它不会回退到直播流。回放始终从头下载，不受 `--initial-segments` 限制。
 
 ```bash
