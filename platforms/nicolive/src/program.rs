@@ -319,70 +319,87 @@ impl NivoServerResponse {
         self.data.get("data").and_then(|data| data.get("response"))
     }
 
-    fn domand(&self) -> Option<&serde_json::Value> {
-        self.response()
-            .and_then(|r| r.get("media"))
-            .and_then(|m| m.get("domand"))
+    /// The object that carries watch metadata. Current watch pages nest the
+    /// payload under `response.$watchV4.data`; older pages kept these fields
+    /// directly on `response`.
+    fn watch(&self) -> Option<&serde_json::Value> {
+        let response = self.response()?;
+        response
+            .get("$watchV4")
+            .and_then(|watch| watch.get("data"))
+            .or(Some(response))
+    }
+
+    fn watch_media(&self) -> Option<&serde_json::Value> {
+        self.watch().and_then(|watch| watch.get("media"))
     }
 
     pub fn program_title(&self) -> Option<String> {
-        self.response()
-            .and_then(|r| r.get("video"))
+        self.watch()
+            .and_then(|watch| watch.get("video"))
             .and_then(|video| video.get("title"))
             .and_then(|title| title.as_str())
             .map(|title| title.to_string())
     }
 
     fn video_id(&self) -> Option<String> {
-        self.response()
-            .and_then(|r| r.get("video"))
+        self.watch()
+            .and_then(|watch| watch.get("video"))
             .and_then(|video| video.get("id"))
             .and_then(|id| id.as_str())
             .map(|id| id.to_string())
     }
 
     fn access_right_key(&self) -> Option<String> {
-        self.domand()
-            .and_then(|media| media.get("accessRightKey"))
+        let media = self.watch_media()?;
+        media
+            .get("accessRightKey")
+            .or_else(|| {
+                media
+                    .get("domand")
+                    .and_then(|domand| domand.get("accessRightKey"))
+            })
             .and_then(|key| key.as_str())
             .map(|key| key.to_string())
     }
 
+    /// Playable quality ids for `videos` or `audios`. Current pages list them
+    /// under `media.contents`; legacy pages under `media.domand`.
+    fn qualities(&self, kind: &str) -> Option<Vec<String>> {
+        let media = self.watch_media()?;
+        let qualities = media
+            .get("contents")
+            .and_then(|contents| contents.get(kind))
+            .or_else(|| {
+                media
+                    .get("domand")
+                    .and_then(|domand| domand.get(kind))
+            })?;
+        qualities.as_array().and_then(|qualities| {
+            qualities
+                .iter()
+                .filter(|quality| {
+                    quality
+                        .get("isAvailable")
+                        .and_then(|available| available.as_bool())
+                        .unwrap_or_default()
+                })
+                .map(|quality| quality.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect::<Option<Vec<_>>>()
+        })
+    }
+
     fn video_qualities(&self) -> Option<Vec<String>> {
-        self.domand()
-            .and_then(|media| media.get("videos"))
-            .and_then(|quality| quality.as_array())
-            .and_then(|q| {
-                q.iter()
-                    .filter(|q| {
-                        q.get("isAvailable")
-                            .and_then(|q| q.as_bool())
-                            .unwrap_or_default()
-                    })
-                    .map(|q| q.get("id").and_then(|q| q.as_str()).map(String::from))
-                    .collect::<Option<Vec<_>>>()
-            })
+        self.qualities("videos")
     }
 
     fn audio_qualities(&self) -> Option<Vec<String>> {
-        self.domand()
-            .and_then(|media| media.get("audios"))
-            .and_then(|quality| quality.as_array())
-            .and_then(|q| {
-                q.iter()
-                    .filter(|q| {
-                        q.get("isAvailable")
-                            .and_then(|q| q.as_bool())
-                            .unwrap_or_default()
-                    })
-                    .map(|q| q.get("id").and_then(|q| q.as_str()).map(String::from))
-                    .collect::<Option<Vec<_>>>()
-            })
+        self.qualities("audios")
     }
 
     fn action_track_id(&self) -> Option<String> {
-        self.response()
-            .and_then(|r| r.get("client"))
+        self.watch()
+            .and_then(|watch| watch.get("client"))
             .and_then(|client| client.get("watchTrackId"))
             .and_then(|id| id.as_str())
             .map(|id| id.to_string())
@@ -401,6 +418,86 @@ mod tests {
             client: reqwest::Client::new(),
             data: props,
         }
+    }
+
+    fn server_response(props: serde_json::Value) -> NivoServerResponse {
+        NivoServerResponse {
+            client: reqwest::Client::new(),
+            data: props,
+        }
+    }
+
+    #[test]
+    fn watch_v4_payload_exposes_video_fields() {
+        let response = server_response(json!({
+            "data": {
+                "response": {
+                    "$watchV4": {
+                        "data": {
+                            "video": { "id": "sm16550626", "title": "sample" },
+                            "client": { "watchTrackId": "track-1" },
+                            "media": {
+                                "accessRightKey": "right-key",
+                                "contents": {
+                                    "videos": [
+                                        { "id": "video-h264-360p", "isAvailable": true },
+                                        { "id": "video-h264-1080p", "isAvailable": false }
+                                    ],
+                                    "audios": [
+                                        { "id": "audio-aac-192kbps", "isAvailable": true }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }));
+
+        assert_eq!(response.video_id().as_deref(), Some("sm16550626"));
+        assert_eq!(response.program_title().as_deref(), Some("sample"));
+        assert_eq!(response.action_track_id().as_deref(), Some("track-1"));
+        assert_eq!(response.access_right_key().as_deref(), Some("right-key"));
+        assert_eq!(
+            response.video_qualities(),
+            Some(vec!["video-h264-360p".to_string()])
+        );
+        assert_eq!(
+            response.audio_qualities(),
+            Some(vec!["audio-aac-192kbps".to_string()])
+        );
+    }
+
+    #[test]
+    fn legacy_flat_payload_still_works() {
+        let response = server_response(json!({
+            "data": {
+                "response": {
+                    "video": { "id": "sm1", "title": "old" },
+                    "client": { "watchTrackId": "track-0" },
+                    "media": {
+                        "domand": {
+                            "accessRightKey": "old-key",
+                            "videos": [{ "id": "video-old", "isAvailable": true }],
+                            "audios": [{ "id": "audio-old", "isAvailable": true }]
+                        }
+                    }
+                }
+            }
+        }));
+
+        assert_eq!(response.video_id().as_deref(), Some("sm1"));
+        assert_eq!(response.program_title().as_deref(), Some("old"));
+        assert_eq!(response.action_track_id().as_deref(), Some("track-0"));
+        assert_eq!(response.access_right_key().as_deref(), Some("old-key"));
+        assert_eq!(
+            response.video_qualities(),
+            Some(vec!["video-old".to_string()])
+        );
+        assert_eq!(
+            response.audio_qualities(),
+            Some(vec!["audio-old".to_string()])
+        );
     }
 
     #[test]
