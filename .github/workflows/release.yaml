@@ -137,3 +137,5 @@ jobs:
             git commit -m "记录 shiorico 已发布版本 $RELEASE_TAG"
             git push origin "HEAD:${{ github.ref_name }}"
           fi
+
+# Re-register this workflow with GitHub Actions after a stale registration.
